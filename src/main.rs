@@ -117,7 +117,9 @@ fn run_patch(reference: &str, target: &str, config: Option<&Path>, apply: bool) 
         return Ok(());
     }
 
-    let mut client = Client::connect(target, tls::connector())
+    let conn = tls::parse(target);
+    let connector = tls::connector(&conn).context("building TLS connector")?;
+    let mut client = Client::connect(&conn.url, connector)
         .with_context(|| format!("connecting to {target}"))?;
     // Wrap the whole patch in a single transaction so a mid-stream failure
     // rolls back cleanly instead of leaving the target half-patched.

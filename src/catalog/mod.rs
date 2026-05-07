@@ -18,7 +18,9 @@ use globset::GlobSet;
 use postgres::Client;
 
 pub fn snapshot(connection: &str, config: &Config) -> Result<Schema> {
-    let mut client = Client::connect(connection, tls::connector())
+    let conn = tls::parse(connection);
+    let connector = tls::connector(&conn).context("building TLS connector")?;
+    let mut client = Client::connect(&conn.url, connector)
         .context("connecting to postgres")?;
 
     // Force pg_get_*def() to fully-qualify every reference. With a default
