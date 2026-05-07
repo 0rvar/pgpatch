@@ -1,0 +1,156 @@
+# pgpatch
+
+A schema diff tool for PostgreSQL that doesn't parse SQL.
+
+Most schema-diff tools round-trip your migrations through a parser. That parser
+has a long tail of unsupported shapes (RLS subqueries, `security_invoker` views,
+generated columns, partition attach, exclusion constraints), and patching it is
+whack-a-mole.
+
+pgpatch reads `pg_catalog` directly. Everything PostgreSQL knows how to render
+back canonically (`pg_get_indexdef`, `pg_get_constraintdef`, `pg_get_viewdef`,
+`pg_get_functiondef`) is the source of truth, so two snapshots of the same
+schema produce byte-identical artefacts. Diffs are structural, not textual.
+
+## Install
+
+Pre-built static binaries for Linux x86_64 and arm64 are on the
+[Releases page](../../releases). Each binary ships with a `.sha256` and a
+`.cosign.bundle` for keyless Sigstore verification:
+
+```sh
+TAG=v0.0.1
+ARCH=amd64                                  # or arm64
+BASE=https://github.com/OWNER/pgpatch/releases/download/$TAG
+
+curl -L -O $BASE/pgpatch-linux-$ARCH
+curl -L -O $BASE/pgpatch-linux-$ARCH.sha256
+curl -L -O $BASE/pgpatch-linux-$ARCH.cosign.bundle
+
+sha256sum -c pgpatch-linux-$ARCH.sha256
+
+cosign verify-blob \
+  --bundle pgpatch-linux-$ARCH.cosign.bundle \
+  --certificate-identity-regexp '^https://github.com/OWNER/pgpatch/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  pgpatch-linux-$ARCH
+
+chmod +x pgpatch-linux-$ARCH && mv pgpatch-linux-$ARCH /usr/local/bin/pgpatch
+```
+
+To build from source: `cargo build --release` produces `target/release/pgpatch`.
+No system dependencies, no TLS link.
+
+## Quick start
+
+Snapshot a live database to a deterministic JSON artefact:
+
+```sh
+pgpatch snapshot \
+  --config pgpatch.toml \
+  --connection 'postgres://user:pass@host/db' \
+  -o reference.json
+```
+
+Diff two artefacts, or one artefact against a live connection:
+
+```sh
+pgpatch diff reference.json current.json
+pgpatch diff reference.json 'postgres://...' --config pgpatch.toml
+```
+
+Output:
+
+```
++ public.users.deleted_at     timestamptz NULL
+- public.legacy_audit_log
+~ public.account_user.role    varchar(32) → varchar(64)
+```
+
+Emit DDL that brings a target database to match a reference. Without `--apply`
+the SQL just prints to stdout, so you can review it:
+
+```sh
+pgpatch patch --config pgpatch.toml reference.json 'postgres://...'         # dry run
+pgpatch patch --config pgpatch.toml --apply reference.json 'postgres://...' # execute
+```
+
+`--apply` wraps the whole patch in a single transaction; a mid-stream failure
+rolls everything back.
+
+## Config
+
+```toml
+[include]
+schemas = ["public", "pgboss"]
+
+[exclude]
+extensions = ["*"]              # ignore extension drift entirely
+tables     = ["audit.*"]        # globs match against schema.name
+views      = []
+functions  = []
+
+[options]
+ignore_grants     = true
+ignore_comments   = false
+ignore_partitions = ["pgboss.j[0-9a-f]*"]   # drop runtime-created partitions
+```
+
+`include.schemas` is the only required field. Everything else has a sensible
+default.
+
+`ignore_partitions` is for the case where partitions are created at runtime by
+a stored procedure rather than a migration. Without it, every snapshot would
+show drift as queues come and go.
+
+A full example sits in [`examples/pgpatch.toml`](examples/pgpatch.toml).
+
+## What it covers
+
+- Tables, columns, constraints (PK, FK, UNIQUE, CHECK, EXCLUDE)
+- Indexes, including partial, covering, and expression indexes
+- Views and materialized views, with dependency-ordered drops and creates
+- Sequences, including ownership
+- User types: enum, composite, domain, range
+- Functions, triggers, RLS policies
+- Extensions, with version pinning
+- Table partitioning: `PARTITION BY` on parents, `PARTITION OF` on children,
+  `ATTACH/DETACH PARTITION` for bound changes
+
+## What it doesn't
+
+Rename detection. A `RENAME COLUMN` shows up as drop + add. There's no fuzzy
+matching pass and there probably never will be one.
+
+Cross-version canonicalization. Both sides need to be on the same major
+PostgreSQL version, since pgpatch trusts `pg_get_*def` output verbatim.
+
+Online migrations. `--apply` runs everything as one transaction; if you need
+`CONCURRENTLY` for a 50M-row index rebuild, do that out of band.
+
+A few cases emit a `-- TODO:` comment in the SQL instead of guessing. Removing
+an enum value, changing a `GENERATED ALWAYS AS` expression, swapping
+`IDENTITY ALWAYS` ↔ `IDENTITY BY DEFAULT`, and changing a partition strategy
+all fall in this bucket. PostgreSQL doesn't support those in place; the answer
+is a real migration, not a generated one.
+
+## Tests
+
+```sh
+cargo test --release
+```
+
+The test suite is offline. It builds `Change` values directly, runs them through
+the emitter, and asserts on the SQL. No PostgreSQL needed.
+
+## Releases
+
+The workflow at `.github/workflows/release.yml` builds static musl binaries for
+`linux/amd64` and `linux/arm64` on every push to `master`. It reads the version
+from `Cargo.toml`, and if no GitHub Release exists at `v<version>`, it creates a
+draft one with the binaries, SHA-256 checksums, and cosign bundles attached.
+Bump the version in `Cargo.toml`, push, then publish the draft when you're ready.
+
+## License
+
+MIT or Apache-2.0, at your option.

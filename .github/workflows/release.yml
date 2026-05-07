@@ -1,0 +1,181 @@
+name: release
+
+# Reads the version from Cargo.toml. If no GitHub Release exists at
+# v<version>, builds linux/amd64 + linux/arm64 static musl binaries, signs each
+# with cosign keyless OIDC, and attaches the binary + .sha256 + .cosign.bundle
+# to a fresh draft release. If the release already exists this is a no-op so
+# re-pushing the same version doesn't clobber a published release.
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # gh release create / upload
+  id-token: write   # cosign keyless OIDC
+
+jobs:
+  check:
+    name: check release status
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      tag: ${{ steps.read.outputs.tag }}
+      should_build: ${{ steps.gate.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from Cargo.toml
+        id: read
+        run: |
+          set -euo pipefail
+          version=$(awk -F\" '/^version[[:space:]]*=/ { print $2; exit }' Cargo.toml)
+          if [ -z "$version" ]; then
+            echo "could not parse version from Cargo.toml" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version"    >> "$GITHUB_OUTPUT"
+          echo "version: $version"
+
+      - name: Gate on existing release
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.read.outputs.tag }}
+        run: |
+          if gh release view "$TAG" --json tagName >/dev/null 2>&1; then
+            echo "release $TAG already exists; skipping build"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release $TAG does not exist; will build"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: build (${{ matrix.arch }})
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - arch: arm64
+            target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install musl tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Stage artefact + checksum
+        env:
+          ARCH: ${{ matrix.arch }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          install -m 755 "target/$TARGET/release/pgpatch" "dist/pgpatch-linux-$ARCH"
+          cd dist
+          sha256sum "pgpatch-linux-$ARCH" > "pgpatch-linux-$ARCH.sha256"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign with cosign (keyless)
+        env:
+          ARCH: ${{ matrix.arch }}
+          COSIGN_YES: "true"
+        run: |
+          cd dist
+          cosign sign-blob \
+            --yes \
+            --bundle "pgpatch-linux-$ARCH.cosign.bundle" \
+            "pgpatch-linux-$ARCH"
+
+      - name: Upload artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pgpatch-linux-${{ matrix.arch }}
+          path: |
+            dist/pgpatch-linux-${{ matrix.arch }}
+            dist/pgpatch-linux-${{ matrix.arch }}.sha256
+            dist/pgpatch-linux-${{ matrix.arch }}.cosign.bundle
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: create draft release
+    needs: [check, build]
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artefacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Aggregate SHA-256 file
+        run: |
+          cd dist
+          # One file lists all artefact hashes for one-shot verification,
+          # instead of chasing per-binary .sha256 files.
+          sha256sum pgpatch-linux-amd64 pgpatch-linux-arm64 > SHA256SUMS
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.check.outputs.tag }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          notes=$(cat <<EOF
+          Draft release for $TAG.
+
+          Version sourced from Cargo.toml. Each binary ships with a
+          \`.sha256\` and a \`.cosign.bundle\` (Sigstore keyless).
+
+          Verify:
+          \`\`\`sh
+          sha256sum -c SHA256SUMS
+          cosign verify-blob \\
+            --bundle pgpatch-linux-amd64.cosign.bundle \\
+            --certificate-identity-regexp '^https://github.com/${{ github.repository }}/' \\
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \\
+            pgpatch-linux-amd64
+          \`\`\`
+          EOF
+          )
+          gh release create "$TAG" \
+            --draft \
+            --title "$TAG" \
+            --notes "$notes" \
+            dist/pgpatch-linux-amd64 \
+            dist/pgpatch-linux-amd64.sha256 \
+            dist/pgpatch-linux-amd64.cosign.bundle \
+            dist/pgpatch-linux-arm64 \
+            dist/pgpatch-linux-arm64.sha256 \
+            dist/pgpatch-linux-arm64.cosign.bundle \
+            dist/SHA256SUMS

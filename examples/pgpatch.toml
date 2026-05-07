@@ -1,0 +1,9 @@
+[include]
+schemas = ["public", "pgboss"]
+
+[exclude]
+extensions = ["*"]
+
+[options]
+ignore_grants = true
+ignore_comments = false
