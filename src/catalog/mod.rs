@@ -12,12 +12,13 @@ pub mod views;
 
 use crate::config::Config;
 use crate::model::{Namespace, Schema, Table};
+use crate::tls;
 use anyhow::{Context, Result};
 use globset::GlobSet;
-use postgres::{Client, NoTls};
+use postgres::Client;
 
 pub fn snapshot(connection: &str, config: &Config) -> Result<Schema> {
-    let mut client = Client::connect(connection, NoTls)
+    let mut client = Client::connect(connection, tls::connector())
         .context("connecting to postgres")?;
 
     // Force pg_get_*def() to fully-qualify every reference. With a default

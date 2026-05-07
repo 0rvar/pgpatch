@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use pgpatch::{Config, Schema, catalog, diff, emit, render};
-use postgres::{Client, NoTls};
+use pgpatch::{Config, Schema, catalog, diff, emit, render, tls};
+use postgres::Client;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -117,7 +117,7 @@ fn run_patch(reference: &str, target: &str, config: Option<&Path>, apply: bool) 
         return Ok(());
     }
 
-    let mut client = Client::connect(target, NoTls)
+    let mut client = Client::connect(target, tls::connector())
         .with_context(|| format!("connecting to {target}"))?;
     // Wrap the whole patch in a single transaction so a mid-stream failure
     // rolls back cleanly instead of leaving the target half-patched.
