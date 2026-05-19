@@ -1,6 +1,6 @@
 [package]
 name = "pgpatch"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 description = "Snapshot and diff PostgreSQL schemas via pg_catalog"
 license = "MIT OR Apache-2.0"
