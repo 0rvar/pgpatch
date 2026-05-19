@@ -1,3 +1,4 @@
+use crate::catalog::policies::normalize_roles;
 use crate::model::{
     Column, Constraint, Extension, Function, Index, Namespace, PartitionBy, PartitionInfo, Policy,
     QualifiedName, Schema, Sequence, Table, Trigger, UserType, View,
@@ -304,9 +305,15 @@ fn diff_table(qual: &QualifiedName, left: &Table, right: &Table, out: &mut Vec<C
         },
         out,
     );
+    // Roles in a PG policy are a set; the catalog already sorts them, but
+    // snapshot files (or programmatically-constructed Policy structs in tests)
+    // may carry the source ordering. Normalize both sides before comparing
+    // so role-order-only differences don't fire a spurious DROP+CREATE.
+    let left_policies = normalize_policy_roles(&left.policies);
+    let right_policies = normalize_policy_roles(&right.policies);
     diff_named_map(
-        &left.policies,
-        &right.policies,
+        &left_policies,
+        &right_policies,
         |name, p| Change::PolicyAdded { table: qual.clone(), name: name.clone(), policy: p.clone() },
         |name| Change::PolicyRemoved { table: qual.clone(), name: name.clone() },
         |name, before, after| Change::PolicyChanged {
@@ -338,6 +345,17 @@ fn diff_table(qual: &QualifiedName, left: &Table, right: &Table, out: &mut Vec<C
             after: right.partition_of.clone(),
         });
     }
+}
+
+fn normalize_policy_roles(policies: &BTreeMap<String, Policy>) -> BTreeMap<String, Policy> {
+    policies
+        .iter()
+        .map(|(name, p)| {
+            let mut p = p.clone();
+            p.roles = normalize_roles(p.roles);
+            (name.clone(), p)
+        })
+        .collect()
 }
 
 fn diff_columns(qual: &QualifiedName, left: &[Column], right: &[Column], out: &mut Vec<Change>) {

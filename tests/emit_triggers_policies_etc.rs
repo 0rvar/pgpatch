@@ -4,9 +4,9 @@
 // FunctionAdded/Removed/Changed, RlsEnabled/Disabled,
 // plus bucket ordering across phases.
 
-use pgpatch::diff::Change;
+use pgpatch::diff::{Change, diff};
 use pgpatch::emit::sql;
-use pgpatch::model::{Extension, Function, Policy, QualifiedName, Trigger};
+use pgpatch::model::{Extension, Function, Namespace, Policy, QualifiedName, Schema, Table, Trigger};
 
 fn qn(schema: &str, name: &str) -> QualifiedName {
     QualifiedName::new(schema, name)
@@ -378,6 +378,53 @@ fn policy_changed_emits_drop_then_create() {
     let drop_idx = out.find("DROP POLICY p ON public.docs;").expect("drop missing");
     let create_idx = out.find("CREATE POLICY p ON public.docs").expect("create missing");
     assert!(drop_idx < create_idx, "drop must come before create: {out}");
+}
+
+#[test]
+fn policy_role_order_difference_is_not_a_change() {
+    // Roles in a PG policy are a set — order is irrelevant for semantics.
+    // Two snapshots that list the same roles in different orders must not
+    // produce a PolicyChanged (otherwise we emit a spurious DROP+CREATE).
+    let mut left_table = Table::default();
+    left_table.policies.insert(
+        "p".into(),
+        Policy {
+            command: "SELECT".into(),
+            permissive: true,
+            roles: vec!["anon".into(), "authenticated".into()],
+            qual: None,
+            with_check: None,
+        },
+    );
+    let mut right_table = Table::default();
+    right_table.policies.insert(
+        "p".into(),
+        Policy {
+            command: "SELECT".into(),
+            permissive: true,
+            roles: vec!["authenticated".into(), "anon".into()],
+            qual: None,
+            with_check: None,
+        },
+    );
+
+    let mut left = Schema::default();
+    let mut right = Schema::default();
+    let mut left_ns = Namespace::default();
+    let mut right_ns = Namespace::default();
+    left_ns.tables.insert("docs".into(), left_table);
+    right_ns.tables.insert("docs".into(), right_table);
+    left.schemas.insert("public".into(), left_ns);
+    right.schemas.insert("public".into(), right_ns);
+
+    let changes = diff(&left, &right);
+    let has_policy_change = changes
+        .iter()
+        .any(|c| matches!(c, Change::PolicyChanged { .. }));
+    assert!(
+        !has_policy_change,
+        "role-order-only difference must not be a PolicyChanged: {changes:#?}"
+    );
 }
 
 // --- FUNCTION --------------------------------------------------------------

@@ -662,6 +662,21 @@ fn emit_column_change(
             quote_ident(name),
         ));
     }
+    if before.comment != after.comment {
+        match &after.comment {
+            Some(s) => stmts.push(format!(
+                "COMMENT ON COLUMN {}.{} IS '{}';",
+                qual_ident(table),
+                quote_ident(name),
+                s.replace('\'', "''"),
+            )),
+            None => stmts.push(format!(
+                "COMMENT ON COLUMN {}.{} IS NULL;",
+                qual_ident(table),
+                quote_ident(name),
+            )),
+        }
+    }
     if stmts.is_empty() {
         format!(
             "-- no-op column change on {}.{}",

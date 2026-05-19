@@ -363,6 +363,84 @@ fn column_changed_multiple_axes_emits_multiple_statements() {
 }
 
 #[test]
+fn column_changed_comment_added() {
+    // None → Some(s) emits COMMENT ON COLUMN and nothing else.
+    let before = col("c", "integer");
+    let mut after = col("c", "integer");
+    after.comment = Some("hello".into());
+    let sql = emit::sql(&[Change::ColumnChanged {
+        table: qual("public", "t"),
+        name: "c".into(),
+        before,
+        after,
+    }]);
+    assert!(
+        sql.contains("COMMENT ON COLUMN public.t.c IS 'hello';"),
+        "got: {sql}"
+    );
+    assert!(!sql.contains("-- no-op"), "should not be a no-op: {sql}");
+    assert!(!sql.contains("ALTER COLUMN"), "should not alter: {sql}");
+}
+
+#[test]
+fn column_changed_comment_dropped() {
+    // Some(s) → None emits COMMENT ... IS NULL.
+    let mut before = col("c", "integer");
+    before.comment = Some("hello".into());
+    let after = col("c", "integer");
+    let sql = emit::sql(&[Change::ColumnChanged {
+        table: qual("public", "t"),
+        name: "c".into(),
+        before,
+        after,
+    }]);
+    assert!(
+        sql.contains("COMMENT ON COLUMN public.t.c IS NULL;"),
+        "got: {sql}"
+    );
+    assert!(!sql.contains("-- no-op"), "should not be a no-op: {sql}");
+}
+
+#[test]
+fn column_changed_comment_with_not_null_emits_both() {
+    // Comment change + NOT NULL change ⇒ both statements present.
+    let before = col("c", "integer");
+    let mut after = col("c", "integer");
+    after.nullable = false;
+    after.comment = Some("now mandatory".into());
+    let sql = emit::sql(&[Change::ColumnChanged {
+        table: qual("public", "t"),
+        name: "c".into(),
+        before,
+        after,
+    }]);
+    assert!(sql.contains("ALTER COLUMN c SET NOT NULL"), "got: {sql}");
+    assert!(
+        sql.contains("COMMENT ON COLUMN public.t.c IS 'now mandatory';"),
+        "got: {sql}"
+    );
+    assert!(!sql.contains("-- no-op"), "got: {sql}");
+}
+
+#[test]
+fn column_changed_comment_escapes_single_quotes() {
+    // Single quotes in the description body must be doubled per SQL string rules.
+    let before = col("c", "integer");
+    let mut after = col("c", "integer");
+    after.comment = Some("O'Brien's column".into());
+    let sql = emit::sql(&[Change::ColumnChanged {
+        table: qual("public", "t"),
+        name: "c".into(),
+        before,
+        after,
+    }]);
+    assert!(
+        sql.contains("COMMENT ON COLUMN public.t.c IS 'O''Brien''s column';"),
+        "got: {sql}"
+    );
+}
+
+#[test]
 fn primary_key_added_emits_alter_add() {
     let sql = emit::sql(&[Change::PrimaryKeyAdded {
         table: qual("public", "t"),
