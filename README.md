@@ -19,7 +19,7 @@ Pre-built static binaries for Linux x86_64 and arm64 are on the
 `.cosign.bundle` for keyless Sigstore verification:
 
 ```sh
-TAG=v0.0.1
+TAG=v0.1.0
 ARCH=amd64                                  # or arm64
 BASE=https://github.com/OWNER/pgpatch/releases/download/$TAG
 
@@ -101,16 +101,20 @@ Output:
 ~ public.account_user.role    varchar(32) → varchar(64)
 ```
 
-Emit DDL that brings a target database to match a reference. Without `--apply`
-the SQL just prints to stdout, so you can review it:
+Emit DDL that brings a target database to match a reference. The `patch`
+subcommand requires exactly one of `--dry-run` or `--dangerously-apply` — there
+is no default, so a misconfigured automation pipeline can't accidentally
+execute SQL it was meant to print:
 
 ```sh
-pgpatch patch --config pgpatch.toml reference.json 'postgres://...'         # dry run
-pgpatch patch --config pgpatch.toml --apply reference.json 'postgres://...' # execute
+pgpatch patch --config pgpatch.toml --dry-run           reference.json 'postgres://...'  # print SQL
+pgpatch patch --config pgpatch.toml --dangerously-apply reference.json 'postgres://...'  # execute
 ```
 
-`--apply` wraps the whole patch in a single transaction; a mid-stream failure
-rolls everything back.
+`--dangerously-apply` wraps the whole patch in a single transaction; a
+mid-stream failure rolls everything back. The verbose flag name is deliberate:
+schema changes against a live database are irreversible past the commit, so
+the CLI makes you spell out the intent.
 
 ## Config
 
@@ -159,7 +163,7 @@ matching pass and there probably never will be one.
 Cross-version canonicalization. Both sides need to be on the same major
 PostgreSQL version, since pgpatch trusts `pg_get_*def` output verbatim.
 
-Online migrations. `--apply` runs everything as one transaction; if you need
+Online migrations. `--dangerously-apply` runs everything as one transaction; if you need
 `CONCURRENTLY` for a 50M-row index rebuild, do that out of band.
 
 A few cases emit a `-- TODO:` comment in the SQL instead of guessing. Removing
