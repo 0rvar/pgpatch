@@ -167,6 +167,14 @@ fn run_patch(reference: &str, target: &str, config: Option<&Path>, mode: Mode) -
         "about to execute patch SQL with mode != DangerouslyApply ({:?})",
         mode,
     );
+    // Print the structured change summary to stderr before executing so
+    // the audit trail lands ahead of any postgres error. batch_execute is
+    // all-or-nothing from the caller's perspective; without this, a
+    // failure surfaces only the postgres error with no signal of which
+    // change was being applied.
+    eprintln!("--- pgpatch changes ---");
+    eprint!("{}", render::text(&changes));
+    eprintln!("-----------------------");
     tx.batch_execute(&sql).context("applying patch SQL")?;
     tx.commit().context("committing patch transaction")?;
     assert!(
