@@ -53,6 +53,7 @@ pub fn snapshot(connection: &str, config: &Config) -> Result<Schema> {
             &exclude_views,
             &exclude_functions,
             &ignore_partitions,
+            config.options.ignore_grants,
         )?;
         schema.schemas.insert(ns.name, namespace);
     }
@@ -66,6 +67,7 @@ fn build_namespace(
     exclude_views: &GlobSet,
     exclude_functions: &GlobSet,
     ignore_partitions: &GlobSet,
+    ignore_grants: bool,
 ) -> Result<Namespace> {
     let mut namespace = Namespace::default();
 
@@ -116,7 +118,7 @@ fn build_namespace(
     namespace.sequences = sequences::fetch(client, ns.oid)?;
     namespace.types = types::fetch(client, ns.oid)?;
 
-    let function_map = functions::fetch(client, ns.oid)?;
+    let function_map = functions::fetch(client, ns.oid, ignore_grants)?;
     for (key, func) in function_map {
         let qualified = format!("{}.{}", ns.name, key);
         if !exclude_functions.is_match(&qualified) {

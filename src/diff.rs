@@ -55,8 +55,9 @@ pub enum Change {
     PolicyChanged { table: QualifiedName, name: String, before: Policy, after: Policy },
 
     FunctionAdded { qual: QualifiedName, function: Function },
-    FunctionRemoved { qual: QualifiedName },
+    FunctionRemoved { qual: QualifiedName, function: Function },
     FunctionChanged { qual: QualifiedName, before: Function, after: Function },
+    FunctionGrantsChanged { qual: QualifiedName, before: Function, after: Function },
 
     ExtensionAdded { name: String, extension: Extension },
     ExtensionRemoved { name: String },
@@ -146,22 +147,55 @@ fn diff_functions(
     right: &BTreeMap<String, Function>,
     out: &mut Vec<Change>,
 ) {
+    // Functions match on their identity signature (the `name(identity_args)`
+    // map key). The result type never enters the key — it decides *how* a
+    // matched pair diffs. Postgres can CREATE OR REPLACE across a body change
+    // but never across a return-type change (42P13: "cannot change return
+    // type of existing function"), so when both sides know their result type
+    // (`Some`) and it differs, the pair diffs as Removed + Added (drop, then
+    // create). `result_type == None` means the snapshot predates result-type
+    // capture (legacy); such a side can never prove a return-type change, so
+    // the pair degrades to an in-place CREATE OR REPLACE — never a drop.
     for (name, l) in left {
-        let qual = QualifiedName::new(sname, name);
+        let qual = QualifiedName::new(sname, name.as_str());
         match right.get(name) {
-            None => out.push(Change::FunctionRemoved { qual }),
-            Some(r) if l != r => out.push(Change::FunctionChanged {
-                qual,
-                before: l.clone(),
-                after: r.clone(),
-            }),
-            _ => {}
+            None => out.push(Change::FunctionRemoved { qual, function: l.clone() }),
+            Some(r) => {
+                let result_type_differs = matches!(
+                    (&l.result_type, &r.result_type),
+                    (Some(lt), Some(rt)) if lt != rt
+                );
+                if result_type_differs {
+                    out.push(Change::FunctionRemoved {
+                        qual: qual.clone(),
+                        function: l.clone(),
+                    });
+                    out.push(Change::FunctionAdded {
+                        qual,
+                        function: r.clone(),
+                    });
+                } else if l.definition != r.definition {
+                    out.push(Change::FunctionChanged {
+                        qual,
+                        before: l.clone(),
+                        after: r.clone(),
+                    });
+                } else if r.acl.is_some() && l.acl != r.acl {
+                    // acl == None on the desired side means grants are
+                    // unmanaged for this function — never a change.
+                    out.push(Change::FunctionGrantsChanged {
+                        qual,
+                        before: l.clone(),
+                        after: r.clone(),
+                    });
+                }
+            }
         }
     }
     for (name, r) in right {
         if !left.contains_key(name) {
             out.push(Change::FunctionAdded {
-                qual: QualifiedName::new(sname, name),
+                qual: QualifiedName::new(sname, name.as_str()),
                 function: r.clone(),
             });
         }

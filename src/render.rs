@@ -125,11 +125,14 @@ pub fn text(changes: &[Change]) -> String {
             Change::FunctionAdded { qual, .. } => {
                 let _ = writeln!(out, "+ function {qual}");
             }
-            Change::FunctionRemoved { qual } => {
+            Change::FunctionRemoved { qual, .. } => {
                 let _ = writeln!(out, "- function {qual}");
             }
             Change::FunctionChanged { qual, .. } => {
                 let _ = writeln!(out, "~ function {qual}");
+            }
+            Change::FunctionGrantsChanged { qual, .. } => {
+                let _ = writeln!(out, "~ grants on function {qual}");
             }
             Change::ExtensionAdded { name, extension } => {
                 let _ = writeln!(out, "+ extension {name} {}", extension.version);

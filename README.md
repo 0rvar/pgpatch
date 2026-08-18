@@ -150,7 +150,13 @@ A full example sits in [`examples/pgpatch.toml`](examples/pgpatch.toml).
 - Views and materialized views, with dependency-ordered drops and creates
 - Sequences, including ownership
 - User types: enum, composite, domain, range
-- Functions, triggers, RLS policies
+- Functions, triggers, RLS policies. A function whose signature or return
+  type changed is dropped and recreated (PostgreSQL can't `CREATE OR REPLACE`
+  across those); body-only changes apply in place.
+- Grants on functions. A function whose `proacl` is NULL (never granted or
+  revoked explicitly) is left unmanaged — no grant SQL is ever emitted for
+  it. Set `ignore_grants = true` to skip function grants entirely. Grants on
+  other object types (tables, sequences, schemas) are not tracked.
 - Extensions, with version pinning
 - Table partitioning: `PARTITION BY` on parents, `PARTITION OF` on children,
   `ATTACH/DETACH PARTITION` for bound changes
@@ -165,6 +171,11 @@ PostgreSQL version, since pgpatch trusts `pg_get_*def` output verbatim.
 
 Online migrations. `--dangerously-apply` runs everything as one transaction; if you need
 `CONCURRENTLY` for a 50M-row index rebuild, do that out of band.
+
+Dependency tracking for functions. The drop + create pair emitted for a
+signature or return-type change fails if an unchanged trigger or view still
+references the old function — pgpatch doesn't know about function dependents,
+and it never emits `CASCADE`.
 
 A few cases emit a `-- TODO:` comment in the SQL instead of guessing. Removing
 an enum value, changing a `GENERATED ALWAYS AS` expression, swapping

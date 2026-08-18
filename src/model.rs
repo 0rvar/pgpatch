@@ -144,6 +144,45 @@ pub enum UserType {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Function {
     pub definition: String,
+    /// `pg_get_function_result(oid)` — the full RETURNS clause body (e.g.
+    /// `integer`, `TABLE(id bigint)`). `Some("")` for procedures. Part of
+    /// the diff identity when known: Postgres cannot CREATE OR REPLACE
+    /// across a return-type change (42P13), so a result-type difference
+    /// must become a drop + create rather than an in-place change. `None`
+    /// means the snapshot predates result-type capture (legacy) — a legacy
+    /// side can never prove a return-type change, so the diff degrades to
+    /// in-place CREATE OR REPLACE instead of drop + create.
+    #[serde(default)]
+    pub result_type: Option<String>,
+    /// Raw `pg_proc.proname`, unquoted. Together with `identity_args` this
+    /// lets the emitter build a correctly-quoted executable identity for
+    /// DROP/GRANT/REVOKE. Empty in legacy snapshots — the emitter then
+    /// falls back to the verbatim map key.
+    #[serde(default)]
+    pub name: String,
+    /// `pg_get_function_identity_arguments(oid)` output, verbatim. May be
+    /// empty for zero-argument functions; legacy detection keys off `name`.
+    #[serde(default)]
+    pub identity_args: String,
+    /// Exploded `pg_proc.proacl`, sorted for deterministic equality.
+    /// `None` means the ACL column is NULL (implicit default privileges) —
+    /// pgpatch treats that as "unmanaged" and never emits grant SQL for it.
+    /// `Some(vec![])` is a real, fully-revoked ACL.
+    #[serde(default)]
+    pub acl: Option<Vec<GrantEntry>>,
+}
+
+/// One entry from `aclexplode(pg_proc.proacl)`. `grantee` is `Some(role)`
+/// for a real role, or `None` for the PUBLIC pseudo-role (grantee oid 0) —
+/// identified by oid, never by spelling, so a real role named "Public" or
+/// "PUBLIC" is never confused with the keyword.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct GrantEntry {
+    #[serde(default)]
+    pub grantee: Option<String>,
+    pub privilege: String,
+    #[serde(default)]
+    pub grantable: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

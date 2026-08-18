@@ -1,5 +1,5 @@
 use crate::diff::Change;
-use crate::model::{Column, Identity, QualifiedName, Sequence, Table, UserType};
+use crate::model::{Column, Function, GrantEntry, Identity, QualifiedName, Sequence, Table, UserType};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
@@ -470,25 +470,55 @@ fn bucket(c: &Change, b: &mut Buckets) {
                 .push(emit_create_policy(table, name, after));
         }
 
-        Change::FunctionAdded { function, .. } => {
+        Change::FunctionAdded { qual, function } => {
             b.create_functions
                 .push(ensure_terminated(&function.definition));
+            if let Some(entries) = &function.acl {
+                // A freshly-created function carries PG's implicit default
+                // ACL (EXECUTE to PUBLIC); revoke that first so the grants
+                // below are the complete story.
+                let ident = routine_ident(qual, function);
+                b.create_functions.push(format!(
+                    "REVOKE ALL ON ROUTINE {ident} FROM PUBLIC;",
+                ));
+                for e in entries {
+                    b.create_functions.push(emit_grant(&ident, e));
+                }
+            }
         }
-        Change::FunctionRemoved { qual } => {
-            // `qual.name` already includes the argument signature
-            // (e.g. `my_fn(integer, text)`) so DROP FUNCTION can pinpoint
-            // the right overload.
+        Change::FunctionRemoved { qual, function } => {
+            // TODO: no dependency tracking — DROP FUNCTION fails if an
+            // unchanged trigger or view still references this function;
+            // pgpatch doesn't know about function dependents.
             b.drop_functions.push(format!(
-                "DROP FUNCTION {}.{};",
-                quote_ident(&qual.schema),
-                qual.name,
+                "DROP FUNCTION {};",
+                routine_ident(qual, function),
             ));
         }
-        Change::FunctionChanged { after, .. } => {
+        Change::FunctionChanged { qual, before, after } => {
             // pg_get_functiondef emits CREATE OR REPLACE, so this works as
-            // an in-place update for everything except signature changes.
+            // an in-place update for everything except signature changes
+            // (those diff as Removed + Added instead).
             b.other_changes
                 .push(ensure_terminated(&after.definition));
+            if let Some(reference) = &after.acl {
+                if after.acl != before.acl {
+                    b.other_changes.extend(emit_grant_reconciliation(
+                        &routine_ident(qual, after),
+                        &before.acl,
+                        reference,
+                    ));
+                }
+            }
+        }
+        Change::FunctionGrantsChanged { qual, before, after } => {
+            if let Some(reference) = &after.acl {
+                b.other_changes.extend(emit_grant_reconciliation(
+                    &routine_ident(qual, after),
+                    &before.acl,
+                    reference,
+                ));
+            }
         }
 
         Change::PartitionByChanged { table, .. } => {
@@ -867,6 +897,130 @@ fn emit_create_policy(
     }
     s.push(';');
     s
+}
+
+/// SQL to bring a function's grants from `live` to `reference`. Only called
+/// when the reference side manages grants (`acl` is `Some`). A `None` live
+/// ACL means the function still has its implicit default privileges, which
+/// can't be enumerated for precise revokes — normalize with
+/// `REVOKE ALL … FROM PUBLIC` first, then grant the full reference set.
+///
+/// Reconciliation is set-based over (grantee, privilege) pairs. A pair on
+/// both sides with a differing grant option is adjusted in place:
+/// `REVOKE GRANT OPTION FOR` keeps the privilege and drops only the option
+/// (a full REVOKE fails under the default RESTRICT if the grantee granted
+/// onward), while the upgrade direction re-grants WITH GRANT OPTION. A plain
+/// REVOKE fires only when the pair disappears entirely.
+fn emit_grant_reconciliation(
+    ident: &str,
+    live: &Option<Vec<GrantEntry>>,
+    reference: &[GrantEntry],
+) -> Vec<String> {
+    let mut stmts = Vec::new();
+    match live {
+        None => {
+            stmts.push(format!("REVOKE ALL ON ROUTINE {ident} FROM PUBLIC;"));
+            for e in reference {
+                stmts.push(emit_grant(ident, e));
+            }
+        }
+        Some(live_entries) => {
+            let live_pairs = grant_option_by_pair(live_entries);
+            let ref_pairs = grant_option_by_pair(reference);
+            for ((grantee, privilege), live_grantable) in &live_pairs {
+                match ref_pairs.get(&(grantee.clone(), privilege.clone())) {
+                    None => stmts.push(format!(
+                        "REVOKE {privilege} ON ROUTINE {ident} FROM {};",
+                        grantee_ident(grantee),
+                    )),
+                    Some(ref_grantable) => {
+                        if *live_grantable && !ref_grantable {
+                            stmts.push(format!(
+                                "REVOKE GRANT OPTION FOR {privilege} ON ROUTINE {ident} FROM {};",
+                                grantee_ident(grantee),
+                            ));
+                        }
+                    }
+                }
+            }
+            for ((grantee, privilege), ref_grantable) in &ref_pairs {
+                let needs_grant = match live_pairs.get(&(grantee.clone(), privilege.clone())) {
+                    None => true,
+                    // GRANT … WITH GRANT OPTION on an existing plain grant
+                    // upgrades it in place.
+                    Some(live_grantable) => *ref_grantable && !live_grantable,
+                };
+                if needs_grant {
+                    stmts.push(emit_grant(
+                        ident,
+                        &GrantEntry {
+                            grantee: grantee.clone(),
+                            privilege: privilege.clone(),
+                            grantable: *ref_grantable,
+                        },
+                    ));
+                }
+            }
+        }
+    }
+    stmts
+}
+
+/// Collapse ACL entries to (grantee, privilege) → holds-grant-option. The
+/// grantor isn't tracked, so the same pair can appear once per grantor; the
+/// pair effectively carries the grant option if any of its entries does.
+fn grant_option_by_pair(
+    entries: &[GrantEntry],
+) -> BTreeMap<(Option<String>, String), bool> {
+    let mut m: BTreeMap<(Option<String>, String), bool> = BTreeMap::new();
+    for e in entries {
+        let grantable = m
+            .entry((e.grantee.clone(), e.privilege.clone()))
+            .or_insert(false);
+        *grantable = *grantable || e.grantable;
+    }
+    m
+}
+
+fn emit_grant(ident: &str, e: &GrantEntry) -> String {
+    let mut s = format!(
+        "GRANT {} ON ROUTINE {ident} TO {}",
+        e.privilege,
+        grantee_ident(&e.grantee),
+    );
+    if e.grantable {
+        s.push_str(" WITH GRANT OPTION");
+    }
+    s.push(';');
+    s
+}
+
+/// The PUBLIC pseudo-role (`None`, grantee oid 0) is a keyword, not a role —
+/// it must stay bare. Every real role name gets identifier quoting, so a
+/// role actually named "PUBLIC" comes out quoted rather than as the keyword.
+fn grantee_ident(role: &Option<String>) -> String {
+    match role {
+        None => "PUBLIC".to_string(),
+        Some(r) => quote_ident(r),
+    }
+}
+
+/// Executable identity for DROP FUNCTION and GRANT/REVOKE statements, built
+/// from the structured `name`/`identity_args` fields so the raw proname can
+/// be identifier-quoted. Snapshots that predate those fields (empty `name`)
+/// fall back to the verbatim composite map key in `qual.name`, which already
+/// carries the argument list (`f(integer)`).
+fn routine_ident(qual: &QualifiedName, f: &Function) -> String {
+    if f.name.is_empty() {
+        format!("{}.{}", quote_ident(&qual.schema), qual.name)
+    } else {
+        format!(
+            "{}.{}({})",
+            quote_ident(&qual.schema),
+            quote_ident(&f.name),
+            f.identity_args,
+        )
+    }
 }
 
 // Extracts the parenthesised body of a PRIMARY KEY clause from a constraintdef

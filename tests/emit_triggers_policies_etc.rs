@@ -6,10 +6,32 @@
 
 use pgpatch::diff::{Change, diff};
 use pgpatch::emit::sql;
-use pgpatch::model::{Extension, Function, Namespace, Policy, QualifiedName, Schema, Table, Trigger};
+use pgpatch::model::{
+    Extension, Function, GrantEntry, Namespace, Policy, QualifiedName, Schema, Table, Trigger,
+};
 
 fn qn(schema: &str, name: &str) -> QualifiedName {
     QualifiedName::new(schema, name)
+}
+
+/// A schema with a single function in `public`, keyed by its identity
+/// signature (`name(args)`) the way the catalog stores it.
+fn function_schema(key: &str, function: Function) -> Schema {
+    let mut ns = Namespace::default();
+    ns.functions.insert(key.into(), function);
+    let mut schema = Schema::default();
+    schema.schemas.insert("public".into(), ns);
+    schema
+}
+
+fn grant(grantee: &str, privilege: &str, grantable: bool) -> GrantEntry {
+    GrantEntry { grantee: Some(grantee.into()), privilege: privilege.into(), grantable }
+}
+
+/// A grant to the PUBLIC pseudo-role (grantee oid 0) — `grantee: None`,
+/// distinct from any real role that happens to be named "PUBLIC".
+fn public_grant(privilege: &str, grantable: bool) -> GrantEntry {
+    GrantEntry { grantee: None, privilege: privilege.into(), grantable }
 }
 
 // --- SCHEMA ----------------------------------------------------------------
@@ -435,6 +457,7 @@ fn function_added_emits_terminated_definition() {
         qual: qn("public", "f(integer)"),
         function: Function {
             definition: "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT x $$".into(),
+            ..Function::default()
         },
     }]);
     assert!(out.contains("CREATE OR REPLACE FUNCTION public.f"), "got: {out}");
@@ -444,10 +467,11 @@ fn function_added_emits_terminated_definition() {
 #[test]
 fn function_removed_preserves_arg_signature_in_drop() {
     // qual.name carries the full function signature like `my_fn(integer, text)`.
-    // The DROP must keep that verbatim — re-quoting would break the overload
-    // resolution.
+    // With no structured name/identity_args (legacy snapshot), the DROP keeps
+    // that verbatim — re-quoting the composite would break overload resolution.
     let out = sql(&[Change::FunctionRemoved {
         qual: qn("public", "my_fn(integer, text)"),
+        function: Function::default(),
     }]);
     assert!(
         out.contains("DROP FUNCTION public.my_fn(integer, text);"),
@@ -456,15 +480,458 @@ fn function_removed_preserves_arg_signature_in_drop() {
 }
 
 #[test]
-fn function_changed_emits_create_or_replace_only() {
-    let out = sql(&[Change::FunctionChanged {
-        qual: qn("public", "f(integer)"),
-        before: Function { definition: "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT 0 $$".into() },
-        after: Function { definition: "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT x $$".into() },
+fn function_removed_quotes_structured_name() {
+    // With structured fields present, the raw proname is identifier-quoted:
+    // a function named `Camel` must not emit unquoted `public.Camel()`,
+    // which Postgres would fold to `public.camel()`.
+    let out = sql(&[Change::FunctionRemoved {
+        qual: qn("public", "Camel(integer)"),
+        function: Function {
+            name: "Camel".into(),
+            identity_args: "integer".into(),
+            ..Function::default()
+        },
     }]);
+    assert!(out.contains("DROP FUNCTION public.\"Camel\"(integer);"), "got: {out}");
+}
+
+#[test]
+fn function_removed_escapes_embedded_quote_in_name() {
+    // A double quote inside the proname must be doubled inside the quoted
+    // identifier — pasting it raw would break out of the statement.
+    let out = sql(&[Change::FunctionRemoved {
+        qual: qn("public", "weird\"name()"),
+        function: Function {
+            name: "weird\"name".into(),
+            identity_args: "".into(),
+            ..Function::default()
+        },
+    }]);
+    assert!(out.contains("DROP FUNCTION public.\"weird\"\"name\"();"), "got: {out}");
+}
+
+#[test]
+fn function_body_only_change_emits_create_or_replace_without_drop() {
+    // A body-only change (same signature, same result type) diffs as
+    // FunctionChanged and applies in place via CREATE OR REPLACE — no drop.
+    let left = function_schema(
+        "f(integer)",
+        Function {
+            definition: "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT 0 $$".into(),
+            result_type: Some("integer".into()),
+            ..Function::default()
+        },
+    );
+    let right = function_schema(
+        "f(integer)",
+        Function {
+            definition: "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT x $$".into(),
+            result_type: Some("integer".into()),
+            ..Function::default()
+        },
+    );
+    let changes = diff(&left, &right);
+    assert!(
+        changes.iter().any(|c| matches!(c, Change::FunctionChanged { .. })),
+        "body-only change must be FunctionChanged: {changes:#?}",
+    );
+    assert_eq!(changes.len(), 1, "expected exactly one change: {changes:#?}");
+
+    let out = sql(&changes);
     assert!(out.contains("SELECT x"), "got: {out}");
     assert!(!out.contains("DROP FUNCTION"), "should not drop on in-place change: {out}");
     assert!(!out.contains("SELECT 0"), "must not include before-definition: {out}");
+}
+
+#[test]
+fn function_return_type_change_diffs_as_removed_plus_added() {
+    // Postgres rejects CREATE OR REPLACE across a return-type change (42P13),
+    // so it must diff as drop + create, never as an in-place FunctionChanged.
+    let left = function_schema(
+        "f(integer)",
+        Function {
+            definition: "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT x $$".into(),
+            result_type: Some("integer".into()),
+            ..Function::default()
+        },
+    );
+    let right = function_schema(
+        "f(integer)",
+        Function {
+            definition: "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS text LANGUAGE sql AS $$ SELECT x::text $$".into(),
+            result_type: Some("text".into()),
+            ..Function::default()
+        },
+    );
+    let changes = diff(&left, &right);
+    assert!(
+        changes.iter().any(|c| matches!(c, Change::FunctionRemoved { .. })),
+        "expected FunctionRemoved: {changes:#?}",
+    );
+    assert!(
+        changes.iter().any(|c| matches!(c, Change::FunctionAdded { .. })),
+        "expected FunctionAdded: {changes:#?}",
+    );
+    assert!(
+        !changes.iter().any(|c| matches!(c, Change::FunctionChanged { .. })),
+        "return-type change must not be FunctionChanged: {changes:#?}",
+    );
+
+    // And the emitted SQL drops the old overload before creating the new one.
+    let out = sql(&changes);
+    let drop_idx = out.find("DROP FUNCTION public.f(integer);").expect("drop missing");
+    let create_idx = out.find("RETURNS text").expect("create missing");
+    assert!(drop_idx < create_idx, "drop must precede create: {out}");
+}
+
+#[test]
+fn legacy_snapshot_without_result_type_degrades_to_in_place_change() {
+    // A legacy snapshot (result_type: None) can never prove a return-type
+    // change, so a differing definition must diff as an in-place
+    // FunctionChanged — never as Removed + Added (which against a whole
+    // legacy snapshot would mean a mass DROP of every function).
+    let left = function_schema(
+        "f(integer)",
+        Function {
+            definition: "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT 0 $$".into(),
+            result_type: None,
+            ..Function::default()
+        },
+    );
+    let right = function_schema(
+        "f(integer)",
+        Function {
+            definition: "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT x $$".into(),
+            result_type: Some("integer".into()),
+            ..Function::default()
+        },
+    );
+    let changes = diff(&left, &right);
+    assert_eq!(changes.len(), 1, "expected exactly one change: {changes:#?}");
+    assert!(
+        matches!(changes[0], Change::FunctionChanged { .. }),
+        "legacy side must degrade to FunctionChanged: {changes:#?}",
+    );
+}
+
+#[test]
+fn legacy_snapshot_without_result_type_and_identical_definition_is_no_change() {
+    let definition = "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT x $$";
+    let left = function_schema(
+        "f(integer)",
+        Function {
+            definition: definition.into(),
+            result_type: None,
+            ..Function::default()
+        },
+    );
+    let right = function_schema(
+        "f(integer)",
+        Function {
+            definition: definition.into(),
+            result_type: Some("integer".into()),
+            ..Function::default()
+        },
+    );
+    let changes = diff(&left, &right);
+    assert!(changes.is_empty(), "legacy vs current identical function must not diff: {changes:#?}");
+}
+
+#[test]
+fn function_acl_only_change_diffs_as_grants_changed() {
+    let definition = "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT x $$";
+    let left = function_schema(
+        "f(integer)",
+        Function {
+            definition: definition.into(),
+            result_type: Some("integer".into()),
+            acl: Some(vec![grant("anon", "EXECUTE", false)]),
+            ..Function::default()
+        },
+    );
+    let right = function_schema(
+        "f(integer)",
+        Function {
+            definition: definition.into(),
+            result_type: Some("integer".into()),
+            acl: Some(vec![grant("authenticated", "EXECUTE", false)]),
+            ..Function::default()
+        },
+    );
+    let changes = diff(&left, &right);
+    assert_eq!(changes.len(), 1, "expected exactly one change: {changes:#?}");
+    assert!(
+        matches!(changes[0], Change::FunctionGrantsChanged { .. }),
+        "acl-only change must be FunctionGrantsChanged: {changes:#?}",
+    );
+
+    // Precise reconciliation: revoke the live-only entry, grant the ref-only
+    // one, and leave the definition alone. ON ROUTINE covers procedures too;
+    // ON FUNCTION is rejected for them.
+    let out = sql(&changes);
+    assert!(out.contains("REVOKE EXECUTE ON ROUTINE public.f(integer) FROM anon;"), "got: {out}");
+    assert!(out.contains("GRANT EXECUTE ON ROUTINE public.f(integer) TO authenticated;"), "got: {out}");
+    assert!(!out.contains("ON FUNCTION"), "grant SQL must use ON ROUTINE: {out}");
+    assert!(!out.contains("CREATE OR REPLACE"), "grants-only change must not re-create: {out}");
+}
+
+#[test]
+fn function_unmanaged_reference_acl_is_never_a_change() {
+    // acl == None on the reference (desired) side means grants are unmanaged
+    // for this function: whatever the live side has, no change is produced.
+    let definition = "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT x $$";
+    let live = function_schema(
+        "f(integer)",
+        Function {
+            definition: definition.into(),
+            result_type: Some("integer".into()),
+            acl: Some(vec![grant("anon", "EXECUTE", false)]),
+            ..Function::default()
+        },
+    );
+    let reference = function_schema(
+        "f(integer)",
+        Function {
+            definition: definition.into(),
+            result_type: Some("integer".into()),
+            acl: None,
+            ..Function::default()
+        },
+    );
+    let changes = diff(&live, &reference);
+    assert!(changes.is_empty(), "unmanaged reference acl must not diff: {changes:#?}");
+}
+
+#[test]
+fn duplicate_live_acl_entries_reconcile_to_nothing_against_single_entry() {
+    // aclexplode yields one row per (grantor, grantee, privilege); with the
+    // grantor dropped, the same effective grant held from two grantors is a
+    // duplicate entry. Reconciliation is set-based, so a duplicated live
+    // entry against a single-entry reference must emit no statements —
+    // otherwise the "drift" could never be repaired and would flag forever.
+    let before = Function {
+        acl: Some(vec![
+            grant("anon", "EXECUTE", false),
+            grant("anon", "EXECUTE", false),
+        ]),
+        ..Function::default()
+    };
+    let after = Function {
+        acl: Some(vec![grant("anon", "EXECUTE", false)]),
+        ..Function::default()
+    };
+    let out = sql(&[Change::FunctionGrantsChanged {
+        qual: qn("public", "f(integer)"),
+        before,
+        after,
+    }]);
+    assert!(!out.contains("REVOKE"), "duplicate-only difference must not revoke: {out}");
+    assert!(!out.contains("GRANT"), "duplicate-only difference must not grant: {out}");
+}
+
+#[test]
+fn function_added_with_acl_emits_revoke_then_grants_after_create() {
+    let out = sql(&[Change::FunctionAdded {
+        qual: qn("public", "f(integer)"),
+        function: Function {
+            definition: "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT x $$".into(),
+            result_type: Some("integer".into()),
+            acl: Some(vec![
+                grant("anon", "EXECUTE", false),
+                grant("ops_admin", "EXECUTE", true),
+            ]),
+            ..Function::default()
+        },
+    }]);
+    let create = out.find("CREATE OR REPLACE FUNCTION public.f").expect("create missing");
+    let revoke = out.find("REVOKE ALL ON ROUTINE public.f(integer) FROM PUBLIC;").expect("revoke missing");
+    let grant_plain = out.find("GRANT EXECUTE ON ROUTINE public.f(integer) TO anon;").expect("plain grant missing");
+    let grant_grantable = out
+        .find("GRANT EXECUTE ON ROUTINE public.f(integer) TO ops_admin WITH GRANT OPTION;")
+        .expect("grantable grant missing");
+    assert!(create < revoke, "create before revoke: {out}");
+    assert!(revoke < grant_plain, "revoke before grants: {out}");
+    assert!(revoke < grant_grantable, "revoke before grants: {out}");
+}
+
+#[test]
+fn function_added_without_acl_emits_no_grant_sql() {
+    let out = sql(&[Change::FunctionAdded {
+        qual: qn("public", "f(integer)"),
+        function: Function {
+            definition: "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT x $$".into(),
+            result_type: Some("integer".into()),
+            acl: None,
+            ..Function::default()
+        },
+    }]);
+    assert!(!out.contains("REVOKE"), "unmanaged acl must emit no grant SQL: {out}");
+    assert!(!out.contains("GRANT "), "unmanaged acl must emit no grant SQL: {out}");
+}
+
+#[test]
+fn function_grants_reconciliation_from_default_acl_normalizes_via_public_revoke() {
+    // Live side still has the implicit default ACL (None) — its entries can't
+    // be enumerated for precise revokes, so reconciliation starts from
+    // REVOKE ALL FROM PUBLIC and then grants the full reference set.
+    let definition = "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT x $$";
+    let before = Function {
+        definition: definition.into(),
+        result_type: Some("integer".into()),
+        acl: None,
+        ..Function::default()
+    };
+    let after = Function {
+        definition: definition.into(),
+        result_type: Some("integer".into()),
+        acl: Some(vec![public_grant("EXECUTE", false)]),
+        ..Function::default()
+    };
+    let out = sql(&[Change::FunctionGrantsChanged {
+        qual: qn("public", "f(integer)"),
+        before,
+        after,
+    }]);
+    let revoke = out.find("REVOKE ALL ON ROUTINE public.f(integer) FROM PUBLIC;").expect("revoke missing");
+    let grant_idx = out.find("GRANT EXECUTE ON ROUTINE public.f(integer) TO PUBLIC;").expect("grant missing");
+    assert!(revoke < grant_idx, "revoke must precede grant: {out}");
+}
+
+#[test]
+fn real_role_named_public_is_quoted_not_keyword() {
+    // A role literally named "Public" (or "PUBLIC") is identified by oid in
+    // the catalog and must emit as a quoted identifier — emitting the bare
+    // PUBLIC keyword instead would grant to everyone.
+    let before = Function {
+        acl: Some(vec![]),
+        ..Function::default()
+    };
+    let after = Function {
+        acl: Some(vec![
+            grant("Public", "EXECUTE", false),
+            public_grant("EXECUTE", false),
+        ]),
+        ..Function::default()
+    };
+    let out = sql(&[Change::FunctionGrantsChanged {
+        qual: qn("public", "f(integer)"),
+        before,
+        after,
+    }]);
+    assert!(
+        out.contains("GRANT EXECUTE ON ROUTINE public.f(integer) TO \"Public\";"),
+        "real role must be quoted: {out}",
+    );
+    assert!(
+        out.contains("GRANT EXECUTE ON ROUTINE public.f(integer) TO PUBLIC;"),
+        "pseudo-role must stay the bare keyword: {out}",
+    );
+}
+
+#[test]
+fn grant_option_downgrade_revokes_only_the_option() {
+    // Live holds the privilege WITH GRANT OPTION, reference holds it plain:
+    // only the option is revoked. A full REVOKE + re-GRANT would fail under
+    // the default RESTRICT whenever the grantee had granted onward.
+    let before = Function {
+        acl: Some(vec![grant("anon", "EXECUTE", true)]),
+        ..Function::default()
+    };
+    let after = Function {
+        acl: Some(vec![grant("anon", "EXECUTE", false)]),
+        ..Function::default()
+    };
+    let out = sql(&[Change::FunctionGrantsChanged {
+        qual: qn("public", "f(integer)"),
+        before,
+        after,
+    }]);
+    assert!(
+        out.contains("REVOKE GRANT OPTION FOR EXECUTE ON ROUTINE public.f(integer) FROM anon;"),
+        "got: {out}",
+    );
+    assert!(
+        !out.contains("REVOKE EXECUTE"),
+        "must not revoke the privilege itself: {out}",
+    );
+    assert!(!out.contains("GRANT EXECUTE"), "no re-grant needed: {out}");
+}
+
+#[test]
+fn grant_option_upgrade_regrants_with_grant_option() {
+    // Plain → grantable upgrades in place: GRANT … WITH GRANT OPTION on an
+    // existing grant just adds the option, no revoke needed.
+    let before = Function {
+        acl: Some(vec![grant("anon", "EXECUTE", false)]),
+        ..Function::default()
+    };
+    let after = Function {
+        acl: Some(vec![grant("anon", "EXECUTE", true)]),
+        ..Function::default()
+    };
+    let out = sql(&[Change::FunctionGrantsChanged {
+        qual: qn("public", "f(integer)"),
+        before,
+        after,
+    }]);
+    assert!(
+        out.contains("GRANT EXECUTE ON ROUTINE public.f(integer) TO anon WITH GRANT OPTION;"),
+        "got: {out}",
+    );
+    assert!(!out.contains("REVOKE"), "upgrade must not revoke: {out}");
+}
+
+#[test]
+fn grant_sql_quotes_structured_function_name() {
+    // The executable identity in grant statements comes from the structured
+    // name/identity_args fields, quoted — not from the verbatim map key.
+    let before = Function {
+        name: "Camel".into(),
+        identity_args: "integer".into(),
+        acl: Some(vec![]),
+        ..Function::default()
+    };
+    let after = Function {
+        name: "Camel".into(),
+        identity_args: "integer".into(),
+        acl: Some(vec![grant("anon", "EXECUTE", false)]),
+        ..Function::default()
+    };
+    let out = sql(&[Change::FunctionGrantsChanged {
+        qual: qn("public", "Camel(integer)"),
+        before,
+        after,
+    }]);
+    assert!(
+        out.contains("GRANT EXECUTE ON ROUTINE public.\"Camel\"(integer) TO anon;"),
+        "got: {out}",
+    );
+}
+
+#[test]
+fn function_changed_with_acl_change_reconciles_grants_after_create_or_replace() {
+    let before = Function {
+        definition: "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT 0 $$".into(),
+        result_type: Some("integer".into()),
+        acl: Some(vec![grant("anon", "EXECUTE", false)]),
+        ..Function::default()
+    };
+    let after = Function {
+        definition: "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT x $$".into(),
+        result_type: Some("integer".into()),
+        acl: Some(vec![grant("authenticated", "EXECUTE", false)]),
+        ..Function::default()
+    };
+    let out = sql(&[Change::FunctionChanged {
+        qual: qn("public", "f(integer)"),
+        before,
+        after,
+    }]);
+    let create = out.find("CREATE OR REPLACE FUNCTION public.f").expect("create missing");
+    let revoke = out.find("REVOKE EXECUTE ON ROUTINE public.f(integer) FROM anon;").expect("revoke missing");
+    let grant_idx = out.find("GRANT EXECUTE ON ROUTINE public.f(integer) TO authenticated;").expect("grant missing");
+    assert!(create < revoke, "create before grant reconciliation: {out}");
+    assert!(create < grant_idx, "create before grant reconciliation: {out}");
 }
 
 // --- RLS -------------------------------------------------------------------
@@ -598,8 +1065,16 @@ fn function_changed_emitted_in_other_changes_bucket() {
     let out = sql(&[
         Change::FunctionChanged {
             qual: qn("public", "f(integer)"),
-            before: Function { definition: "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT 0 $$".into() },
-            after: Function { definition: "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT x $$".into() },
+            before: Function {
+                definition: "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT 0 $$".into(),
+                result_type: Some("integer".into()),
+                ..Function::default()
+            },
+            after: Function {
+                definition: "CREATE OR REPLACE FUNCTION public.f(x integer) RETURNS integer LANGUAGE sql AS $$ SELECT x $$".into(),
+                result_type: Some("integer".into()),
+                ..Function::default()
+            },
         },
         Change::SchemaAdded { name: "s".into() },
     ]);
