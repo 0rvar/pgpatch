@@ -21,14 +21,9 @@ struct ViewSlot {
 // in a sane order. Within a phase we keep input order — diff already sorts by
 // (schema, name).
 pub fn sql(changes: &[Change]) -> String {
-    let mut buckets = Buckets::default();
-    for c in changes {
-        bucket(c, &mut buckets);
-    }
-
     let mut out = String::new();
     let mut first = true;
-    for stmt in buckets.into_ordered() {
+    for stmt in statements(changes) {
         if !first {
             out.push('\n');
         }
@@ -39,6 +34,18 @@ pub fn sql(changes: &[Change]) -> String {
         }
     }
     out
+}
+
+/// The patch as individual emitted statements, in execution order. Each entry
+/// is one executable statement (or a `--`-prefixed placeholder comment), so
+/// `statements(...).len()` is the honest statement count — counting semicolons
+/// in the joined SQL overcounts, since function bodies contain their own.
+pub fn statements(changes: &[Change]) -> Vec<String> {
+    let mut buckets = Buckets::default();
+    for c in changes {
+        bucket(c, &mut buckets);
+    }
+    buckets.into_ordered()
 }
 
 #[derive(Default)]

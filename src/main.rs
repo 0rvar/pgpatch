@@ -182,16 +182,14 @@ fn run_patch(reference: &str, target: &str, config: Option<&Path>, mode: Mode) -
         "committed patch transaction with mode != DangerouslyApply ({:?}) — apply branch is mis-wired",
         mode,
     );
-    eprintln!("applied {} statement(s)", count_statements(&sql));
+    eprintln!("applied {} statement(s)", count_statements(&changes));
     Ok(())
 }
 
-fn count_statements(sql: &str) -> usize {
-    sql.split(';')
-        .filter(|s| {
-            let t = s.trim();
-            !t.is_empty() && !t.starts_with("--")
-        })
+fn count_statements(changes: &[pgpatch::diff::Change]) -> usize {
+    emit::statements(changes)
+        .iter()
+        .filter(|s| !s.trim_start().starts_with("--"))
         .count()
 }
 
