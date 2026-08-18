@@ -371,9 +371,10 @@ fn bucket(c: &Change, b: &mut Buckets) {
                 qual: format!("{}.{}", qual.schema, qual.name),
                 depends_on: view.depends_on.clone(),
                 sql: format!(
-                    "CREATE {} {} AS\n{}",
+                    "CREATE {} {}{} AS\n{}",
                     kw,
                     qual_ident(qual),
+                    view_options_clause(&view.options),
                     ensure_terminated(&view.definition),
                 ),
             });
@@ -398,9 +399,10 @@ fn bucket(c: &Change, b: &mut Buckets) {
                 qual: qual_str,
                 depends_on: after.depends_on.clone(),
                 sql: format!(
-                    "CREATE {} {} AS\n{}",
+                    "CREATE {} {}{} AS\n{}",
                     kw,
                     qual_ident(qual),
+                    view_options_clause(&after.options),
                     ensure_terminated(&after.definition),
                 ),
             });
@@ -1048,6 +1050,28 @@ fn quote_ident(s: &str) -> String {
 
 fn quote_literal(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
+}
+
+// Reloptions clause for CREATE [MATERIALIZED] VIEW. pg_get_viewdef strips
+// options like security_invoker, so they're captured separately in
+// View.options and must be re-emitted here or a recreate silently drops them.
+fn view_options_clause(options: &BTreeMap<String, String>) -> String {
+    if options.is_empty() {
+        return String::new();
+    }
+    let items: Vec<String> = options
+        .iter()
+        .map(|(k, v)| {
+            if v.is_empty() {
+                k.clone()
+            } else if v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-') {
+                format!("{k}={v}")
+            } else {
+                format!("{k}={}", quote_literal(v))
+            }
+        })
+        .collect();
+    format!(" WITH ({})", items.join(", "))
 }
 
 fn ensure_terminated(s: &str) -> String {

@@ -111,6 +111,65 @@ fn view_changed_emits_drop_then_create() {
 }
 
 #[test]
+fn view_added_emits_reloptions() {
+    // pg_get_viewdef strips reloptions like security_invoker; the emitter
+    // must re-apply them or a recreate silently downgrades the view.
+    let mut view = View {
+        definition: "SELECT 1 AS x".into(),
+        ..Default::default()
+    };
+    view.options.insert("security_invoker".into(), "true".into());
+    let out = sql(&[Change::ViewAdded {
+        qual: qn("public", "v_sec"),
+        materialized: false,
+        view,
+    }]);
+    assert!(
+        out.contains("CREATE VIEW public.v_sec WITH (security_invoker=true) AS"),
+        "options clause missing:\n{out}"
+    );
+}
+
+#[test]
+fn view_changed_emits_after_side_reloptions() {
+    let before = View {
+        definition: "SELECT 1".into(),
+        ..Default::default()
+    };
+    let mut after = View {
+        definition: "SELECT 1".into(),
+        ..Default::default()
+    };
+    after.options.insert("check_option".into(), "cascaded".into());
+    after.options.insert("security_invoker".into(), "true".into());
+    let out = sql(&[Change::ViewChanged {
+        qual: qn("public", "v"),
+        materialized: false,
+        before,
+        after,
+    }]);
+    assert!(
+        out.contains("CREATE VIEW public.v WITH (check_option=cascaded, security_invoker=true) AS"),
+        "options clause missing or misordered:\n{out}"
+    );
+}
+
+#[test]
+fn view_without_options_emits_no_with_clause() {
+    let view = View {
+        definition: "SELECT 1".into(),
+        ..Default::default()
+    };
+    let out = sql(&[Change::ViewAdded {
+        qual: qn("public", "v_plain"),
+        materialized: false,
+        view,
+    }]);
+    assert!(out.contains("CREATE VIEW public.v_plain AS"));
+    assert!(!out.contains("WITH ("));
+}
+
+#[test]
 fn view_changed_materialized() {
     let before = View {
         definition: "SELECT 1".into(),
