@@ -316,14 +316,14 @@ fn bucket(c: &Change, b: &mut Buckets) {
         }
         Change::IndexRemoved { table, name } => {
             b.drop_indexes.push(format!(
-                "DROP INDEX {}.{};",
+                "DROP INDEX IF EXISTS {}.{};",
                 quote_ident(&table.schema),
                 quote_ident(name),
             ));
         }
         Change::IndexChanged { table, name, after, .. } => {
             b.drop_indexes.push(format!(
-                "DROP INDEX {}.{};",
+                "DROP INDEX IF EXISTS {}.{};",
                 quote_ident(&table.schema),
                 quote_ident(name),
             ));

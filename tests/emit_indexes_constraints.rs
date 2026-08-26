@@ -65,7 +65,7 @@ fn index_removed_emits_schema_qualified_drop() {
         name: "users_email_idx".into(),
     };
     let out = emit::sql(&[change]);
-    assert_eq!(out.trim(), "DROP INDEX public.users_email_idx;");
+    assert_eq!(out.trim(), "DROP INDEX IF EXISTS public.users_email_idx;");
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn index_removed_quotes_reserved_schema_and_mixed_case_name() {
         name: "MyIndex".into(),
     };
     let out = emit::sql(&[change]);
-    assert_eq!(out.trim(), "DROP INDEX \"user\".\"MyIndex\";");
+    assert_eq!(out.trim(), "DROP INDEX IF EXISTS \"user\".\"MyIndex\";");
 }
 
 // ---------- IndexChanged ----------
@@ -91,7 +91,7 @@ fn index_changed_emits_drop_then_create() {
         after: idx("CREATE INDEX users_email_idx ON public.users (lower(email))"),
     };
     let out = emit::sql(&[change]);
-    assert!(out.contains("DROP INDEX public.users_email_idx;"));
+    assert!(out.contains("DROP INDEX IF EXISTS public.users_email_idx;"));
     assert!(out.contains("CREATE INDEX users_email_idx ON public.users (lower(email));"));
     let drop_pos = out.find("DROP INDEX").unwrap();
     let create_pos = out.find("CREATE INDEX").unwrap();
@@ -206,7 +206,7 @@ fn drops_precede_creates_across_indexes_and_constraints() {
     let out = emit::sql(&changes);
 
     let p_drop_con = out.find("DROP CONSTRAINT old_chk").unwrap();
-    let p_drop_idx = out.find("DROP INDEX public.old_idx").unwrap();
+    let p_drop_idx = out.find("DROP INDEX IF EXISTS public.old_idx").unwrap();
     let p_add_con = out.find("ADD CONSTRAINT users_age_chk").unwrap();
     let p_add_idx = out.find("CREATE INDEX users_email_idx").unwrap();
 
@@ -235,7 +235,7 @@ fn changed_index_drop_precedes_added_constraint_create() {
     ];
     let out = emit::sql(&changes);
 
-    let drop_pos = out.find("DROP INDEX public.t_idx").unwrap();
+    let drop_pos = out.find("DROP INDEX IF EXISTS public.t_idx").unwrap();
     let add_con_pos = out.find("ADD CONSTRAINT t_chk").unwrap();
     let create_idx_pos = out.find("CREATE INDEX t_idx ON public.t (x, y)").unwrap();
     assert!(drop_pos < add_con_pos);
@@ -292,11 +292,36 @@ fn multi_change_snapshot_is_exact() {
     let expected = "\
 ALTER TABLE public.users DROP CONSTRAINT users_old_chk;
 
-DROP INDEX public.users_old_idx;
+DROP INDEX IF EXISTS public.users_old_idx;
 
 ALTER TABLE public.users ADD CONSTRAINT users_new_chk CHECK (age >= 18);
 
 CREATE INDEX users_new_idx ON public.users (email);
 ";
     assert_eq!(out, expected);
+}
+
+#[test]
+fn index_removed_uses_if_exists() {
+    let changes = vec![Change::IndexRemoved {
+        table: qual("pgboss", "job_common"),
+        name: "job_common_created_on_idx".into(),
+    }];
+    let out = emit::sql(&changes);
+    assert!(
+        out.contains("DROP INDEX IF EXISTS pgboss.job_common_created_on_idx;"),
+        "got:\n{out}"
+    );
+}
+
+#[test]
+fn index_changed_uses_if_exists_on_drop() {
+    let changes = vec![Change::IndexChanged {
+        table: qual("public", "t"),
+        name: "t_a_idx".into(),
+        before: idx("CREATE INDEX t_a_idx ON public.t USING btree (a)"),
+        after: idx("CREATE INDEX t_a_idx ON public.t USING btree (a, b)"),
+    }];
+    let out = emit::sql(&changes);
+    assert!(out.contains("DROP INDEX IF EXISTS public.t_a_idx;"), "got:\n{out}");
 }

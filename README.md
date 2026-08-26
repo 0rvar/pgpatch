@@ -146,7 +146,9 @@ A full example sits in [`examples/pgpatch.toml`](examples/pgpatch.toml).
 ## What it covers
 
 - Tables, columns, constraints (PK, FK, UNIQUE, CHECK, EXCLUDE)
-- Indexes, including partial, covering, and expression indexes
+- Indexes, including partial, covering, and expression indexes. On a partitioned table only the
+  parent index is tracked; it is created with plain `ON` so PostgreSQL builds
+  and attaches the partition indexes itself.
 - Views and materialized views, with dependency-ordered drops and creates
 - Sequences, including ownership
 - User types: enum, composite, domain, range
