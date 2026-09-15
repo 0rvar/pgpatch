@@ -612,9 +612,15 @@ fn diff_table(qual: &QualifiedName, left: &Table, right: &Table, out: &mut Vec<C
         },
         out,
     );
+    // The primary key is snapshotted twice: as `primary_key` and as its
+    // `_pkey` constraint. The primary-key path emits the ADD/DROP CONSTRAINT,
+    // so the constraint copy is left out here or the same statement would be
+    // emitted twice and the second one fail.
+    let left_constraints = without_primary_key(&left.constraints);
+    let right_constraints = without_primary_key(&right.constraints);
     diff_named_map(
-        &left.constraints,
-        &right.constraints,
+        &left_constraints,
+        &right_constraints,
         |name, c| Change::ConstraintAdded {
             table: qual.clone(),
             name: name.clone(),
@@ -703,6 +709,14 @@ fn diff_table(qual: &QualifiedName, left: &Table, right: &Table, out: &mut Vec<C
             after: right.partition_of.clone(),
         });
     }
+}
+
+fn without_primary_key(constraints: &BTreeMap<String, Constraint>) -> BTreeMap<String, Constraint> {
+    constraints
+        .iter()
+        .filter(|(_, c)| c.kind != "primary_key")
+        .map(|(name, c)| (name.clone(), c.clone()))
+        .collect()
 }
 
 fn normalize_policy_roles(policies: &BTreeMap<String, Policy>) -> BTreeMap<String, Policy> {

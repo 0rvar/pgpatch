@@ -618,3 +618,83 @@ fn drop_phase_runs_before_create_phase() {
 fn _imports_used() -> BTreeMap<String, String> {
     BTreeMap::new()
 }
+
+#[test]
+fn primary_key_from_index_definition_becomes_named_constraint_clause() {
+    let index = Index {
+        definition: "CREATE UNIQUE INDEX job_pkey ON pgboss.job USING btree (name, id)".into(),
+        unique: true,
+        primary: true,
+    };
+    let sql = emit::sql(&[Change::PrimaryKeyAdded {
+        table: qual("pgboss", "job"),
+        index: index.clone(),
+    }]);
+    assert_eq!(
+        sql,
+        "ALTER TABLE pgboss.job ADD CONSTRAINT job_pkey PRIMARY KEY (name, id);\n"
+    );
+
+    let sql = emit::sql(&[Change::PrimaryKeyRemoved {
+        table: qual("pgboss", "job"),
+        index,
+    }]);
+    assert_eq!(sql, "ALTER TABLE pgboss.job DROP CONSTRAINT job_pkey;\n");
+}
+
+#[test]
+fn primary_key_with_custom_name_drops_by_that_name() {
+    let before = Index {
+        definition: "CREATE UNIQUE INDEX users_pk ON public.users USING btree (id)".into(),
+        unique: true,
+        primary: true,
+    };
+    let after = Index {
+        definition:
+            "CREATE UNIQUE INDEX users_pk ON public.users USING btree (id, tenant) INCLUDE (email)"
+                .into(),
+        unique: true,
+        primary: true,
+    };
+    let sql = emit::sql(&[Change::PrimaryKeyChanged {
+        table: qual("public", "users"),
+        before,
+        after,
+    }]);
+    assert!(
+        sql.contains("ALTER TABLE public.users DROP CONSTRAINT users_pk;"),
+        "got: {sql}"
+    );
+    assert!(
+        sql.contains(
+            "ALTER TABLE public.users ADD CONSTRAINT users_pk PRIMARY KEY (id, tenant) INCLUDE (email);"
+        ),
+        "got: {sql}"
+    );
+}
+
+#[test]
+fn create_table_renders_primary_key_from_index_definition() {
+    let table = Table {
+        columns: vec![Column {
+            name: "id".into(),
+            data_type: "integer".into(),
+            nullable: false,
+            ..Default::default()
+        }],
+        primary_key: Some(Index {
+            definition: "CREATE UNIQUE INDEX t_pkey ON public.t USING btree (id)".into(),
+            unique: true,
+            primary: true,
+        }),
+        ..Default::default()
+    };
+    let sql = emit::sql(&[Change::TableAdded {
+        qual: qual("public", "t"),
+        table,
+    }]);
+    assert!(
+        sql.contains("    CONSTRAINT t_pkey PRIMARY KEY (id)\n)"),
+        "got: {sql}"
+    );
+}

@@ -301,20 +301,22 @@ fn bucket(c: &Change, b: &mut Buckets) {
                 pk_clause(&index.definition),
             ));
         }
-        Change::PrimaryKeyRemoved { table, .. } => {
-            // The constraint name isn't in the Index struct; PG defaults to
-            // `<table>_pkey`. Emit a best-effort drop with that convention.
+        Change::PrimaryKeyRemoved { table, index } => {
             b.drop_constraints.push(format!(
                 "ALTER TABLE {} DROP CONSTRAINT {};",
                 qual_ident(table),
-                quote_ident(&format!("{}_pkey", table.name)),
+                quote_ident(&pk_name(table, &index.definition)),
             ));
         }
-        Change::PrimaryKeyChanged { table, after, .. } => {
+        Change::PrimaryKeyChanged {
+            table,
+            before,
+            after,
+        } => {
             b.drop_constraints.push(format!(
                 "ALTER TABLE {} DROP CONSTRAINT {};",
                 qual_ident(table),
-                quote_ident(&format!("{}_pkey", table.name)),
+                quote_ident(&pk_name(table, &before.definition)),
             ));
             b.create_constraints.push(format!(
                 "ALTER TABLE {} ADD {};",
@@ -1120,8 +1122,40 @@ fn routine_ident(qual: &QualifiedName, f: &Function) -> String {
 // like `PRIMARY KEY (id, name) INCLUDE (...)`. Returns `PRIMARY KEY (...)` —
 // just hands back the whole thing since pg_get_constraintdef is already
 // canonical.
+// A primary key is snapshotted as its backing index, i.e. the pg_get_indexdef
+// form `CREATE UNIQUE INDEX t_pkey ON s.t USING btree (id, v) [INCLUDE (...)]`.
+// The constraint shares the index's name, and everything from the column list
+// onwards is valid after `PRIMARY KEY`. A definition that already reads as a
+// constraint clause (`PRIMARY KEY (id)`) is passed through, so hand-written
+// artefacts keep working.
 fn pk_clause(def: &str) -> String {
-    def.trim().to_string()
+    let def = def.trim();
+    if !def.starts_with("CREATE ") {
+        return def.to_string();
+    }
+    let columns = def
+        .find(" USING ")
+        .and_then(|i| def[i..].find('(').map(|j| &def[i + j..]))
+        .unwrap_or(def);
+    match index_name(def) {
+        Some(name) => format!("CONSTRAINT {} PRIMARY KEY {}", quote_ident(name), columns),
+        None => format!("PRIMARY KEY {columns}"),
+    }
+}
+
+// The constraint name behind a primary key: the backing index's name when the
+// definition is in pg_get_indexdef form, else Postgres's `<table>_pkey` default.
+fn pk_name(table: &QualifiedName, def: &str) -> String {
+    index_name(def.trim())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{}_pkey", table.name))
+}
+
+// `CREATE [UNIQUE] INDEX <name> ON ...` -> <name>, unquoted.
+fn index_name(def: &str) -> Option<&str> {
+    let after_index = &def[def.find(" INDEX ")? + " INDEX ".len()..];
+    let name = after_index.split_whitespace().next()?;
+    Some(name.trim_matches('"'))
 }
 
 fn qual_ident(q: &QualifiedName) -> String {

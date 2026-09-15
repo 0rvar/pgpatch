@@ -294,3 +294,148 @@ fn partition_local_default_survives_a_parent_default_change() {
         .expect("setting both defaults must succeed");
     assert_eq!(db.snapshot(), overridden);
 }
+
+#[test]
+fn parent_check_constraint_is_snapshotted_once_and_round_trips() {
+    let Some(mut db) = TestSchema::new("pgpatch_t_parent_check") else {
+        return;
+    };
+    db.exec(&partitioned_table("pgpatch_t_parent_check"));
+    let without = db.snapshot();
+
+    db.exec(
+        "ALTER TABLE pgpatch_t_parent_check.job ADD CONSTRAINT name_not_blank CHECK (name <> '');",
+    );
+    let with = db.snapshot();
+    let ns = &with.schemas["pgpatch_t_parent_check"];
+    assert!(ns.tables["job"].constraints.contains_key("name_not_blank"));
+    assert!(
+        ns.tables["job_common"].constraints.is_empty(),
+        "inherited clone must not be snapshotted on the partition: {:?}",
+        ns.tables["job_common"].constraints
+    );
+
+    let to_without = diff::diff(&with, &without);
+    assert!(!to_without.is_empty());
+    db.apply(&to_without)
+        .expect("dropping the parent constraint must succeed");
+    assert_eq!(db.snapshot(), without);
+
+    let to_with = diff::diff(&without, &with);
+    assert!(!to_with.is_empty());
+    db.apply(&to_with)
+        .expect("adding the parent constraint must succeed");
+    assert_eq!(db.snapshot(), with);
+}
+
+#[test]
+fn parent_primary_key_is_snapshotted_once_and_round_trips() {
+    let Some(mut db) = TestSchema::new("pgpatch_t_parent_pk") else {
+        return;
+    };
+    db.exec(&partitioned_table("pgpatch_t_parent_pk"));
+    let without = db.snapshot();
+
+    db.exec("ALTER TABLE pgpatch_t_parent_pk.job ADD PRIMARY KEY (name, created_on);");
+    let with = db.snapshot();
+    let ns = &with.schemas["pgpatch_t_parent_pk"];
+    assert!(ns.tables["job"].constraints.contains_key("job_pkey"));
+    assert!(
+        ns.tables["job_common"].constraints.is_empty(),
+        "cloned pkey must not be snapshotted on the partition: {:?}",
+        ns.tables["job_common"].constraints
+    );
+
+    let to_without = diff::diff(&with, &without);
+    assert!(!to_without.is_empty());
+    db.apply(&to_without)
+        .expect("dropping the parent pkey must succeed");
+    assert_eq!(db.snapshot(), without);
+
+    let to_with = diff::diff(&without, &with);
+    assert!(!to_with.is_empty());
+    db.apply(&to_with)
+        .expect("adding the parent pkey must succeed");
+    assert_eq!(db.snapshot(), with);
+}
+
+#[test]
+fn partition_local_constraint_is_still_snapshotted() {
+    let Some(mut db) = TestSchema::new("pgpatch_t_local_check") else {
+        return;
+    };
+    db.exec(&partitioned_table("pgpatch_t_local_check"));
+    db.exec("ALTER TABLE pgpatch_t_local_check.job_common ADD CONSTRAINT local_check CHECK (name <> 'x');");
+
+    let snap = db.snapshot();
+    let ns = &snap.schemas["pgpatch_t_local_check"];
+    assert!(ns.tables["job"].constraints.is_empty());
+    assert!(
+        ns.tables["job_common"]
+            .constraints
+            .contains_key("local_check")
+    );
+}
+
+#[test]
+fn parent_trigger_is_snapshotted_once_and_round_trips() {
+    let Some(mut db) = TestSchema::new("pgpatch_t_parent_trg") else {
+        return;
+    };
+    db.exec(&partitioned_table("pgpatch_t_parent_trg"));
+    db.exec(
+        "CREATE FUNCTION pgpatch_t_parent_trg.noop() RETURNS trigger LANGUAGE plpgsql \
+         AS $$ BEGIN RETURN NEW; END $$;",
+    );
+    let without = db.snapshot();
+
+    db.exec(
+        "CREATE TRIGGER touch BEFORE INSERT ON pgpatch_t_parent_trg.job \
+         FOR EACH ROW EXECUTE FUNCTION pgpatch_t_parent_trg.noop();",
+    );
+    let with = db.snapshot();
+    let ns = &with.schemas["pgpatch_t_parent_trg"];
+    assert!(ns.tables["job"].triggers.contains_key("touch"));
+    assert!(
+        ns.tables["job_common"].triggers.is_empty(),
+        "cloned trigger must not be snapshotted on the partition: {:?}",
+        ns.tables["job_common"].triggers
+    );
+
+    let to_without = diff::diff(&with, &without);
+    assert!(!to_without.is_empty());
+    db.apply(&to_without)
+        .expect("dropping the parent trigger must succeed");
+    assert_eq!(db.snapshot(), without);
+
+    let to_with = diff::diff(&without, &with);
+    assert!(!to_with.is_empty());
+    db.apply(&to_with)
+        .expect("creating the parent trigger must succeed");
+    assert_eq!(db.snapshot(), with);
+}
+
+#[test]
+fn plain_table_primary_key_round_trips() {
+    let Some(mut db) = TestSchema::new("pgpatch_t_plain_pk") else {
+        return;
+    };
+    db.exec("CREATE TABLE pgpatch_t_plain_pk.t (id int NOT NULL, v text);");
+    let without = db.snapshot();
+
+    db.exec("ALTER TABLE pgpatch_t_plain_pk.t ADD PRIMARY KEY (id);");
+    let with = db.snapshot();
+
+    // The primary key appears both as `primary_key` and as the `t_pkey`
+    // constraint in the snapshot; the patch must add and drop it once.
+    let to_without = diff::diff(&with, &without);
+    assert!(!to_without.is_empty());
+    db.apply(&to_without)
+        .expect("dropping the pkey must succeed");
+    assert_eq!(db.snapshot(), without);
+
+    let to_with = diff::diff(&without, &with);
+    assert!(!to_with.is_empty());
+    db.apply(&to_with).expect("adding the pkey must succeed");
+    assert_eq!(db.snapshot(), with);
+}
