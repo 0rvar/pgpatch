@@ -4,7 +4,7 @@ use crate::model::{
     QualifiedName, Schema, Sequence, Table, Trigger, UserType, View,
 };
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -88,7 +88,83 @@ pub fn diff(left: &Schema, right: &Schema) -> Vec<Change> {
         diff_namespace(sname, lns, rns, &mut out);
     }
 
-    out
+    suppress_partition_changes_covered_by_parent(left, right, out)
+}
+
+/// Changes on a partition that its parent already carries out.
+///
+/// Columns are inherited from the parent: Postgres rejects `ADD COLUMN` /
+/// `DROP COLUMN` on a partition outright, and an `ALTER COLUMN` on the parent
+/// recurses into every partition. The per-table column diff still sees the
+/// inherited columns on both tables, so a parent change produces a mirrored
+/// change on each partition. Applying the mirror after the parent either
+/// errors ("cannot drop inherited column", or the column is already gone) or
+/// is a no-op, so drop it here. Add/remove is always suppressed on a
+/// partition. A `ColumnChanged` is kept when the parent has no change for
+/// that column — partition-local defaults and NOT NULL are legitimate and
+/// only expressible on the partition.
+///
+/// Likewise `DROP TABLE` on a partitioned parent takes its partitions with
+/// it, so a partition's own `TableRemoved` is dropped when the parent is
+/// removed too. Removing a partition alone (the parent stays) is kept.
+fn suppress_partition_changes_covered_by_parent(
+    left: &Schema,
+    right: &Schema,
+    changes: Vec<Change>,
+) -> Vec<Change> {
+    // "schema.partition" -> "schema.parent", from whichever side knows it.
+    let mut parents: BTreeMap<String, String> = BTreeMap::new();
+    for schema in [right, left] {
+        for (sname, ns) in &schema.schemas {
+            for (tname, table) in &ns.tables {
+                if let Some(info) = &table.partition_of {
+                    parents
+                        .entry(format!("{sname}.{tname}"))
+                        .or_insert_with(|| info.parent.clone());
+                }
+            }
+        }
+    }
+    if parents.is_empty() {
+        return changes;
+    }
+
+    let changed_columns: BTreeSet<(String, String)> = changes
+        .iter()
+        .filter_map(|c| match c {
+            Change::ColumnAdded { table, column } => Some((table.to_string(), column.name.clone())),
+            Change::ColumnRemoved { table, name } | Change::ColumnChanged { table, name, .. } => {
+                Some((table.to_string(), name.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+
+    let removed_tables: BTreeSet<String> = changes
+        .iter()
+        .filter_map(|c| match c {
+            Change::TableRemoved { qual } => Some(qual.to_string()),
+            _ => None,
+        })
+        .collect();
+
+    changes
+        .into_iter()
+        .filter(|c| match c {
+            Change::TableRemoved { qual } => match parents.get(&qual.to_string()) {
+                Some(parent) => !removed_tables.contains(parent),
+                None => true,
+            },
+            Change::ColumnAdded { table, .. } | Change::ColumnRemoved { table, .. } => {
+                !parents.contains_key(&table.to_string())
+            }
+            Change::ColumnChanged { table, name, .. } => match parents.get(&table.to_string()) {
+                Some(parent) => !changed_columns.contains(&(parent.clone(), name.clone())),
+                None => true,
+            },
+            _ => true,
+        })
+        .collect()
 }
 
 fn diff_extensions(

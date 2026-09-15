@@ -195,3 +195,59 @@ fn parent_index_round_trips_through_drop_and_create() {
     assert_eq!(db.attached_child_count("job_created_on_idx"), 1);
     assert_eq!(db.snapshot(), with_index);
 }
+
+#[test]
+fn dropped_parent_column_round_trips_through_the_partition() {
+    let Some(mut db) = TestSchema::new("pgpatch_t_column_drop") else {
+        return;
+    };
+    db.exec(&partitioned_table("pgpatch_t_column_drop"));
+    let without_column = db.snapshot();
+
+    db.exec("ALTER TABLE pgpatch_t_column_drop.job ADD COLUMN blocked boolean NOT NULL DEFAULT false;");
+    let with_column = db.snapshot();
+    assert!(with_column.schemas["pgpatch_t_column_drop"].tables["job_common"]
+        .columns
+        .iter()
+        .any(|c| c.name == "blocked"));
+
+    // The parent DROP COLUMN cascades into the partition, so the patch must
+    // drop the column on the parent only; a second drop on the partition
+    // would fail because the column is already gone.
+    let to_without = diff::diff(&with_column, &without_column);
+    assert!(!to_without.is_empty());
+    db.apply(&to_without)
+        .expect("dropping the parent column must succeed");
+    assert_eq!(db.snapshot(), without_column);
+
+    // ADD COLUMN is likewise only legal on the parent.
+    let to_with = diff::diff(&without_column, &with_column);
+    assert!(!to_with.is_empty());
+    db.apply(&to_with)
+        .expect("adding the parent column must succeed");
+    assert_eq!(db.snapshot(), with_column);
+}
+
+#[test]
+fn dropped_parent_table_takes_its_partitions_with_it() {
+    let Some(mut db) = TestSchema::new("pgpatch_t_table_drop") else {
+        return;
+    };
+    let empty = db.snapshot();
+
+    db.exec(&partitioned_table("pgpatch_t_table_drop"));
+    let with_tables = db.snapshot();
+
+    // DROP TABLE on the parent removes every partition, so the patch must not
+    // then drop the partition by name.
+    let to_empty = diff::diff(&with_tables, &empty);
+    assert!(!to_empty.is_empty());
+    db.apply(&to_empty)
+        .expect("dropping the parent table must succeed");
+    assert_eq!(db.snapshot(), empty);
+
+    let to_with = diff::diff(&empty, &with_tables);
+    db.apply(&to_with)
+        .expect("creating parent and partition must succeed");
+    assert_eq!(db.snapshot(), with_tables);
+}
