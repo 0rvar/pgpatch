@@ -244,7 +244,13 @@ fn bucket(c: &Change, b: &mut Buckets) {
                 b.create_indexes.push(format!("{};", idx.definition));
                 let _ = name;
             }
-            for (name, con) in &table.constraints {
+            // The primary key is already inline in CREATE TABLE; its
+            // constraint entry would add a second one.
+            for (name, con) in table
+                .constraints
+                .iter()
+                .filter(|(_, c)| c.kind != "primary_key")
+            {
                 b.create_constraints.push(format!(
                     "ALTER TABLE {} ADD CONSTRAINT {} {};",
                     qual_ident(qual),
@@ -1133,12 +1139,16 @@ fn pk_clause(def: &str) -> String {
     if !def.starts_with("CREATE ") {
         return def.to_string();
     }
-    let columns = def
+    let from_using = def
         .find(" USING ")
-        .and_then(|i| def[i..].find('(').map(|j| &def[i + j..]))
+        .map(|i| i + " USING ".len())
+        .unwrap_or(0);
+    let columns = def[from_using..]
+        .find('(')
+        .map(|j| &def[from_using + j..])
         .unwrap_or(def);
     match index_name(def) {
-        Some(name) => format!("CONSTRAINT {} PRIMARY KEY {}", quote_ident(name), columns),
+        Some(name) => format!("CONSTRAINT {} PRIMARY KEY {}", quote_ident(&name), columns),
         None => format!("PRIMARY KEY {columns}"),
     }
 }
@@ -1146,16 +1156,29 @@ fn pk_clause(def: &str) -> String {
 // The constraint name behind a primary key: the backing index's name when the
 // definition is in pg_get_indexdef form, else Postgres's `<table>_pkey` default.
 fn pk_name(table: &QualifiedName, def: &str) -> String {
-    index_name(def.trim())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("{}_pkey", table.name))
+    index_name(def.trim()).unwrap_or_else(|| format!("{}_pkey", table.name))
 }
 
-// `CREATE [UNIQUE] INDEX <name> ON ...` -> <name>, unquoted.
-fn index_name(def: &str) -> Option<&str> {
+// `CREATE [UNIQUE] INDEX <name> ON ...` -> <name>, unquoted. A quoted name
+// runs to the closing quote and may contain spaces and doubled quotes.
+fn index_name(def: &str) -> Option<String> {
     let after_index = &def[def.find(" INDEX ")? + " INDEX ".len()..];
-    let name = after_index.split_whitespace().next()?;
-    Some(name.trim_matches('"'))
+    let Some(quoted) = after_index.strip_prefix('"') else {
+        return after_index.split_whitespace().next().map(str::to_string);
+    };
+    let mut name = String::new();
+    let mut chars = quoted.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '"' {
+            name.push(c);
+        } else if chars.peek() == Some(&'"') {
+            chars.next();
+            name.push('"');
+        } else {
+            return Some(name);
+        }
+    }
+    None
 }
 
 fn qual_ident(q: &QualifiedName) -> String {

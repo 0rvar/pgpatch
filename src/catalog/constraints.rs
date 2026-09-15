@@ -11,8 +11,11 @@ pub fn fetch(client: &mut Client, table_oid: u32) -> Result<BTreeMap<String, Con
     // A constraint declared on a partitioned parent is cloned onto every
     // partition with conislocal = false. Those clones are created and dropped
     // through the parent (Postgres rejects dropping them on the partition),
-    // so they are skipped here. A constraint the partition declares itself
-    // stays conislocal = true even once the parent gains a matching one.
+    // so they are skipped here. A constraint declared on the partition alone
+    // is conislocal = true and stays in. When ATTACH PARTITION merges a
+    // partition's own constraint with a matching one on the parent it becomes
+    // the parent's clone (conislocal = false) and is skipped too, which is
+    // right: from then on it is created and dropped through the parent.
     let rows = client
         .query(
             "SELECT conname, contype, pg_get_constraintdef(oid, true) AS def \

@@ -439,3 +439,26 @@ fn plain_table_primary_key_round_trips() {
     db.apply(&to_with).expect("adding the pkey must succeed");
     assert_eq!(db.snapshot(), with);
 }
+
+#[test]
+fn table_with_primary_key_is_created_from_scratch() {
+    let Some(mut db) = TestSchema::new("pgpatch_t_create_pk") else {
+        return;
+    };
+    let empty = db.snapshot();
+    db.exec(
+        "CREATE TABLE pgpatch_t_create_pk.t (id int NOT NULL, v text, \
+         CONSTRAINT t_pk PRIMARY KEY (id), CONSTRAINT v_set CHECK (v IS NOT NULL));",
+    );
+    let with_table = db.snapshot();
+
+    db.apply(&diff::diff(&with_table, &empty))
+        .expect("dropping the table must succeed");
+    assert_eq!(db.snapshot(), empty);
+
+    let to_with = diff::diff(&empty, &with_table);
+    assert!(!to_with.is_empty());
+    db.apply(&to_with)
+        .expect("creating a table with a primary key must succeed");
+    assert_eq!(db.snapshot(), with_table);
+}

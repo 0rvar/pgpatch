@@ -698,3 +698,73 @@ fn create_table_renders_primary_key_from_index_definition() {
         "got: {sql}"
     );
 }
+
+#[test]
+fn table_added_emits_snapshot_primary_key_once() {
+    // A snapshot carries the primary key twice: as `primary_key` and as its
+    // `_pkey` constraint. CREATE TABLE must render it once.
+    let mut constraints = BTreeMap::new();
+    constraints.insert(
+        "t_pkey".to_string(),
+        Constraint {
+            kind: "primary_key".into(),
+            definition: "PRIMARY KEY (id)".into(),
+        },
+    );
+    constraints.insert(
+        "t_v_check".to_string(),
+        Constraint {
+            kind: "check".into(),
+            definition: "CHECK ((v <> ''::text))".into(),
+        },
+    );
+    let table = Table {
+        columns: vec![Column {
+            name: "id".into(),
+            data_type: "integer".into(),
+            nullable: false,
+            ..Default::default()
+        }],
+        primary_key: Some(Index {
+            definition: "CREATE UNIQUE INDEX t_pkey ON public.t USING btree (id)".into(),
+            unique: true,
+            primary: true,
+        }),
+        constraints,
+        ..Default::default()
+    };
+    let sql = emit::sql(&[Change::TableAdded {
+        qual: qual("public", "t"),
+        table,
+    }]);
+    assert_eq!(sql.matches("PRIMARY KEY").count(), 1, "got: {sql}");
+    assert!(sql.contains("ADD CONSTRAINT t_v_check CHECK"), "got: {sql}");
+}
+
+#[test]
+fn primary_key_with_quoted_name_is_parsed_whole() {
+    let index = Index {
+        definition: r#"CREATE UNIQUE INDEX "my ""pk""" ON public."weird tbl" USING btree ("a b")"#
+            .into(),
+        unique: true,
+        primary: true,
+    };
+    let sql = emit::sql(&[Change::PrimaryKeyAdded {
+        table: qual("public", "weird tbl"),
+        index: index.clone(),
+    }]);
+    assert_eq!(
+        sql,
+        r#"ALTER TABLE public."weird tbl" ADD CONSTRAINT "my ""pk""" PRIMARY KEY ("a b");"#
+            .to_string()
+            + "\n"
+    );
+    let sql = emit::sql(&[Change::PrimaryKeyRemoved {
+        table: qual("public", "weird tbl"),
+        index,
+    }]);
+    assert_eq!(
+        sql,
+        r#"ALTER TABLE public."weird tbl" DROP CONSTRAINT "my ""pk""";"#.to_string() + "\n"
+    );
+}
