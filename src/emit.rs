@@ -1,6 +1,6 @@
 use crate::diff::Change;
 use crate::model::{
-    Column, Function, GrantEntry, Identity, QualifiedName, Sequence, Table, UserType,
+    Column, Constraint, Function, GrantEntry, Identity, QualifiedName, Sequence, Table, UserType,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -53,6 +53,13 @@ pub fn statements(changes: &[Change]) -> Vec<String> {
 
 #[derive(Default)]
 struct Buckets {
+    // A detached partition becomes an ordinary table: its own column and
+    // constraint work is only legal once it is out, so DETACH runs first.
+    // ATTACH is the mirror image and runs after the child has been shaped
+    // to match the parent.
+    detach_partitions: Vec<String>,
+    attach_partitions: Vec<String>,
+
     // Drop order (most dependent first).
     drop_policies: Vec<String>,
     drop_triggers: Vec<String>,
@@ -92,6 +99,7 @@ struct Buckets {
 impl Buckets {
     fn into_ordered(self) -> Vec<String> {
         let mut v = Vec::new();
+        v.extend(self.detach_partitions);
         v.extend(self.drop_policies);
         v.extend(self.drop_triggers);
         // Drops go in *reverse* topo order: an upstream view (the one others
@@ -129,6 +137,7 @@ impl Buckets {
         // before any column_change that actually stores the new value.
         v.extend(self.other_changes);
         v.extend(self.column_changes);
+        v.extend(self.attach_partitions);
         v.extend(self.sequence_changes);
         v.extend(self.extension_changes);
         // Now that column_changes have moved any consumers off the doomed
@@ -255,12 +264,24 @@ fn bucket(c: &Change, b: &mut Buckets) {
                 b.create_indexes.push(format!("{};", idx.definition));
                 let _ = name;
             }
-            // The primary key is already inline in CREATE TABLE; its
-            // constraint entry would add a second one.
+            // An ordinary table gets its primary key inline in CREATE TABLE,
+            // so the constraint entry is skipped there. A partition is created
+            // with PARTITION OF, which has no column list, so its own primary
+            // key is added afterwards like any other constraint.
+            let pk_inlined = table.partition_of.is_none();
+            if !pk_inlined && !has_primary_key_constraint(table) {
+                if let Some(pk) = &table.primary_key {
+                    b.create_constraints.push(format!(
+                        "ALTER TABLE {} ADD {};",
+                        qual_ident(qual),
+                        pk_clause(&pk.definition),
+                    ));
+                }
+            }
             for (name, con) in table
                 .constraints
                 .iter()
-                .filter(|(_, c)| c.kind != "primary_key")
+                .filter(|(_, c)| !(pk_inlined && c.kind == "primary_key"))
             {
                 b.create_constraints.push(format!(
                     "ALTER TABLE {} ADD CONSTRAINT {} {};",
@@ -634,7 +655,7 @@ fn bucket(c: &Change, b: &mut Buckets) {
             // DETACH then ATTACH with the new bound.
             match (before, after) {
                 (None, Some(info)) => {
-                    b.other_changes.push(format!(
+                    b.attach_partitions.push(format!(
                         "ALTER TABLE {} ATTACH PARTITION {} {};",
                         info.parent,
                         qual_ident(table),
@@ -642,19 +663,19 @@ fn bucket(c: &Change, b: &mut Buckets) {
                     ));
                 }
                 (Some(info), None) => {
-                    b.other_changes.push(format!(
+                    b.detach_partitions.push(format!(
                         "ALTER TABLE {} DETACH PARTITION {};",
                         info.parent,
                         qual_ident(table),
                     ));
                 }
                 (Some(b_info), Some(a_info)) => {
-                    b.other_changes.push(format!(
+                    b.detach_partitions.push(format!(
                         "ALTER TABLE {} DETACH PARTITION {};",
                         b_info.parent,
                         qual_ident(table),
                     ));
-                    b.other_changes.push(format!(
+                    b.attach_partitions.push(format!(
                         "ALTER TABLE {} ATTACH PARTITION {} {};",
                         a_info.parent,
                         qual_ident(table),
@@ -688,7 +709,15 @@ fn emit_create_table(qual: &QualifiedName, table: &Table) -> String {
         .iter()
         .map(|c| format!("    {}", column_decl(c)))
         .collect();
-    if let Some(pk) = &table.primary_key {
+    // Prefer the constraint form of the primary key: it carries the name and
+    // DEFERRABLE, which the backing index definition does not.
+    if let Some((name, con)) = primary_key_constraint(table) {
+        parts.push(format!(
+            "    CONSTRAINT {} {}",
+            quote_ident(name),
+            con.definition
+        ));
+    } else if let Some(pk) = &table.primary_key {
         parts.push(format!("    {}", pk_clause(&pk.definition)));
     }
     s.push_str(&parts.join(",\n"));
@@ -698,6 +727,17 @@ fn emit_create_table(qual: &QualifiedName, table: &Table) -> String {
     }
     s.push(';');
     s
+}
+
+fn primary_key_constraint(table: &Table) -> Option<(&String, &Constraint)> {
+    table
+        .constraints
+        .iter()
+        .find(|(_, c)| c.kind == "primary_key")
+}
+
+fn has_primary_key_constraint(table: &Table) -> bool {
+    primary_key_constraint(table).is_some()
 }
 
 fn column_decl(c: &Column) -> String {

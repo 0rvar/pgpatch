@@ -768,3 +768,83 @@ fn primary_key_with_quoted_name_is_parsed_whole() {
         r#"ALTER TABLE public."weird tbl" DROP CONSTRAINT "my ""pk""";"#.to_string() + "\n"
     );
 }
+
+#[test]
+fn table_added_partition_with_local_primary_key_adds_it_after_create() {
+    let mut constraints = BTreeMap::new();
+    constraints.insert(
+        "c_pkey".to_string(),
+        Constraint {
+            kind: "primary_key".into(),
+            definition: "PRIMARY KEY (id)".into(),
+        },
+    );
+    let table = Table {
+        columns: vec![Column {
+            name: "id".into(),
+            data_type: "integer".into(),
+            nullable: false,
+            ..Default::default()
+        }],
+        primary_key: Some(Index {
+            definition: "CREATE UNIQUE INDEX c_pkey ON public.c USING btree (id)".into(),
+            unique: true,
+            primary: true,
+        }),
+        constraints,
+        partition_of: Some(pgpatch::model::PartitionInfo {
+            parent: "public.p".into(),
+            bound: "DEFAULT".into(),
+        }),
+        ..Default::default()
+    };
+    let sql = emit::sql(&[Change::TableAdded {
+        qual: qual("public", "c"),
+        table,
+    }]);
+    assert!(
+        sql.contains("CREATE TABLE public.c PARTITION OF public.p DEFAULT;"),
+        "got: {sql}"
+    );
+    assert!(
+        sql.contains("ALTER TABLE public.c ADD CONSTRAINT c_pkey PRIMARY KEY (id);"),
+        "got: {sql}"
+    );
+    assert_eq!(sql.matches("PRIMARY KEY").count(), 1, "got: {sql}");
+}
+
+#[test]
+fn table_added_inlines_primary_key_constraint_with_deferrability() {
+    let mut constraints = BTreeMap::new();
+    constraints.insert(
+        "t_pkey".to_string(),
+        Constraint {
+            kind: "primary_key".into(),
+            definition: "PRIMARY KEY (id) DEFERRABLE INITIALLY DEFERRED".into(),
+        },
+    );
+    let table = Table {
+        columns: vec![Column {
+            name: "id".into(),
+            data_type: "integer".into(),
+            nullable: false,
+            ..Default::default()
+        }],
+        primary_key: Some(Index {
+            definition: "CREATE UNIQUE INDEX t_pkey ON public.t USING btree (id)".into(),
+            unique: true,
+            primary: true,
+        }),
+        constraints,
+        ..Default::default()
+    };
+    let sql = emit::sql(&[Change::TableAdded {
+        qual: qual("public", "t"),
+        table,
+    }]);
+    assert!(
+        sql.contains("    CONSTRAINT t_pkey PRIMARY KEY (id) DEFERRABLE INITIALLY DEFERRED\n)"),
+        "got: {sql}"
+    );
+    assert_eq!(sql.matches("PRIMARY KEY").count(), 1, "got: {sql}");
+}

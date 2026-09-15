@@ -14,6 +14,9 @@ schema produce byte-identical artefacts. Diffs are structural, not textual.
 
 ## Install
 
+pgpatch needs PostgreSQL 13 or newer on the server side (it reads
+`pg_trigger.tgparentid`).
+
 Pre-built static binaries for Linux x86_64 and arm64 are on the
 [Releases page](../../releases). Each binary ships with a `.sha256` and a
 `.cosign.bundle` for keyless Sigstore verification:

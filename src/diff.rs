@@ -265,17 +265,25 @@ pub fn diff(left: &Schema, right: &Schema) -> Vec<Change> {
 /// `DROP TABLE` on a partitioned parent takes its partitions with it, so a
 /// partition's own `TableRemoved` is dropped when the parent is removed too.
 /// Removing a partition alone (the parent stays) is kept.
+///
+/// Attaching and detaching move constraints and indexes between the two
+/// tables without any statement of their own. On DETACH the parent's clones
+/// stay behind on the child as its own; on ATTACH a child constraint or
+/// index matching the parent's is absorbed into the clone. The snapshot
+/// shows those as added on detach and removed on attach, so a constraint or
+/// index change on a table changing sides is dropped when the parent has a
+/// matching definition.
 fn suppress_partition_changes_covered_by_parent(
     left: &Schema,
     right: &Schema,
     changes: Vec<Change>,
 ) -> Vec<Change> {
-    fn table<'a>(schema: &'a Schema, flat: &str) -> Option<&'a Table> {
+    fn lookup_table<'a>(schema: &'a Schema, flat: &str) -> Option<&'a Table> {
         let (sname, tname) = flat.split_once('.')?;
         schema.schemas.get(sname)?.tables.get(tname)
     }
     fn parent_of<'a>(schema: &'a Schema, flat: &str) -> Option<&'a str> {
-        table(schema, flat)?
+        lookup_table(schema, flat)?
             .partition_of
             .as_ref()
             .map(|p| p.parent.as_str())
@@ -287,7 +295,7 @@ fn suppress_partition_changes_covered_by_parent(
         if parent_of(left, &flat) != Some(parent) {
             return None;
         }
-        (table(left, parent).is_some() && table(right, parent).is_some())
+        (lookup_table(left, parent).is_some() && lookup_table(right, parent).is_some())
             .then(|| parent.to_string())
     };
 
@@ -314,14 +322,98 @@ fn suppress_partition_changes_covered_by_parent(
             _ => {}
         }
     }
-    if removed_tables.is_empty() && removed_columns.is_empty() && column_after.is_empty() {
-        return changes;
+
+    // Parent of a table leaving (detaching) or joining (attaching) a
+    // partitioned table in this diff, as the side that still has the link.
+    let detaching_from = |qual: &QualifiedName| -> Option<&Table> {
+        let flat = qual.to_string();
+        if parent_of(right, &flat).is_some() {
+            return None;
+        }
+        lookup_table(left, parent_of(left, &flat)?)
+    };
+    let attaching_to = |qual: &QualifiedName| -> Option<&Table> {
+        let flat = qual.to_string();
+        if parent_of(left, &flat).is_some() {
+            return None;
+        }
+        lookup_table(right, parent_of(right, &flat)?)
+    };
+    fn has_constraint_like(parent: &Table, definition: &str) -> bool {
+        parent
+            .constraints
+            .values()
+            .any(|c| c.definition == definition)
+    }
+    // Index identity across tables: uniqueness plus everything from USING
+    // on, since the name and table differ between a parent index and the
+    // partition's copy of it.
+    fn index_shape(index: &Index) -> (bool, &str) {
+        let def = index.definition.as_str();
+        (
+            index.unique,
+            def.find(" USING ").map(|i| &def[i..]).unwrap_or(def),
+        )
+    }
+    fn has_index_like(parent: &Table, index: &Index) -> bool {
+        parent
+            .indexes
+            .values()
+            .any(|i| index_shape(i) == index_shape(index))
     }
 
     let mut out = Vec::with_capacity(changes.len());
     let mut partition_local = Vec::new();
     for c in changes {
         match c {
+            Change::ConstraintAdded {
+                ref table,
+                ref constraint,
+                ..
+            } => {
+                let covered = detaching_from(table)
+                    .is_some_and(|parent| has_constraint_like(parent, &constraint.definition));
+                if !covered {
+                    out.push(c);
+                }
+            }
+            Change::ConstraintRemoved {
+                ref table,
+                ref name,
+            } => {
+                let covered = attaching_to(table).is_some_and(|parent| {
+                    lookup_table(left, &table.to_string())
+                        .and_then(|t| t.constraints.get(name))
+                        .is_some_and(|c| has_constraint_like(parent, &c.definition))
+                });
+                if !covered {
+                    out.push(c);
+                }
+            }
+            Change::IndexAdded {
+                ref table,
+                ref index,
+                ..
+            } => {
+                let covered =
+                    detaching_from(table).is_some_and(|parent| has_index_like(parent, index));
+                if !covered {
+                    out.push(c);
+                }
+            }
+            Change::IndexRemoved {
+                ref table,
+                ref name,
+            } => {
+                let covered = attaching_to(table).is_some_and(|parent| {
+                    lookup_table(left, &table.to_string())
+                        .and_then(|t| t.indexes.get(name))
+                        .is_some_and(|i| has_index_like(parent, i))
+                });
+                if !covered {
+                    out.push(c);
+                }
+            }
             Change::TableRemoved { ref qual } => {
                 let covered = parent_of(left, &qual.to_string())
                     .is_some_and(|parent| removed_tables.contains(parent));
@@ -591,7 +683,16 @@ fn diff_types(
 
 fn diff_table(qual: &QualifiedName, left: &Table, right: &Table, out: &mut Vec<Change>) {
     diff_columns(qual, &left.columns, &right.columns, out);
-    diff_primary_key(qual, &left.primary_key, &right.primary_key, out);
+    // The primary key is snapshotted twice: as `primary_key` (its backing
+    // index) and as a constraint of kind "primary_key". Only the constraint
+    // carries the full definition (name, DEFERRABLE), so when either side has
+    // it the constraint diff owns the primary key. Artefacts that only carry
+    // `primary_key` still go through the index-based path.
+    if !has_primary_key_constraint(&left.constraints)
+        && !has_primary_key_constraint(&right.constraints)
+    {
+        diff_primary_key(qual, &left.primary_key, &right.primary_key, out);
+    }
     diff_named_map(
         &left.indexes,
         &right.indexes,
@@ -612,15 +713,9 @@ fn diff_table(qual: &QualifiedName, left: &Table, right: &Table, out: &mut Vec<C
         },
         out,
     );
-    // The primary key is snapshotted twice: as `primary_key` and as its
-    // `_pkey` constraint. The primary-key path emits the ADD/DROP CONSTRAINT,
-    // so the constraint copy is left out here or the same statement would be
-    // emitted twice and the second one fail.
-    let left_constraints = without_primary_key(&left.constraints);
-    let right_constraints = without_primary_key(&right.constraints);
     diff_named_map(
-        &left_constraints,
-        &right_constraints,
+        &left.constraints,
+        &right.constraints,
         |name, c| Change::ConstraintAdded {
             table: qual.clone(),
             name: name.clone(),
@@ -711,12 +806,8 @@ fn diff_table(qual: &QualifiedName, left: &Table, right: &Table, out: &mut Vec<C
     }
 }
 
-fn without_primary_key(constraints: &BTreeMap<String, Constraint>) -> BTreeMap<String, Constraint> {
-    constraints
-        .iter()
-        .filter(|(_, c)| c.kind != "primary_key")
-        .map(|(name, c)| (name.clone(), c.clone()))
-        .collect()
+fn has_primary_key_constraint(constraints: &BTreeMap<String, Constraint>) -> bool {
+    constraints.values().any(|c| c.kind == "primary_key")
 }
 
 fn normalize_policy_roles(policies: &BTreeMap<String, Policy>) -> BTreeMap<String, Policy> {

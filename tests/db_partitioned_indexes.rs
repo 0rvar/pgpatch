@@ -369,7 +369,7 @@ fn partition_local_constraint_is_still_snapshotted() {
 
     let snap = db.snapshot();
     let ns = &snap.schemas["pgpatch_t_local_check"];
-    assert!(ns.tables["job"].constraints.is_empty());
+    assert!(!ns.tables["job"].constraints.contains_key("local_check"));
     assert!(
         ns.tables["job_common"]
             .constraints
@@ -484,4 +484,140 @@ fn partition_sorting_before_its_parent_is_created_from_scratch() {
     db.apply(&to_with)
         .expect("parent must be created before its partition");
     assert_eq!(db.snapshot(), with_tables);
+}
+
+#[test]
+fn deferrable_primary_key_round_trips() {
+    let Some(mut db) = TestSchema::new("pgpatch_t_deferrable_pk") else {
+        return;
+    };
+    db.exec("CREATE TABLE pgpatch_t_deferrable_pk.t (id int NOT NULL);");
+    let plain = db.snapshot();
+    db.exec("ALTER TABLE pgpatch_t_deferrable_pk.t ADD PRIMARY KEY (id);");
+    let immediate = db.snapshot();
+    db.exec(
+        "ALTER TABLE pgpatch_t_deferrable_pk.t DROP CONSTRAINT t_pkey; \
+         ALTER TABLE pgpatch_t_deferrable_pk.t ADD PRIMARY KEY (id) DEFERRABLE INITIALLY DEFERRED;",
+    );
+    let deferred = db.snapshot();
+    assert_ne!(
+        immediate, deferred,
+        "deferrability must be part of the snapshot"
+    );
+
+    // Deferrability lives only in the constraint definition; the patch must
+    // carry it through in both directions and when creating from nothing.
+    db.apply(&diff::diff(&deferred, &immediate))
+        .expect("to immediate");
+    assert_eq!(db.snapshot(), immediate);
+    db.apply(&diff::diff(&immediate, &deferred))
+        .expect("to deferred");
+    assert_eq!(db.snapshot(), deferred);
+    db.apply(&diff::diff(&deferred, &plain)).expect("drop pkey");
+    assert_eq!(db.snapshot(), plain);
+    db.apply(&diff::diff(&plain, &deferred))
+        .expect("add deferred pkey");
+    assert_eq!(db.snapshot(), deferred);
+}
+
+#[test]
+fn partition_local_primary_key_is_created_with_the_partition() {
+    let Some(mut db) = TestSchema::new("pgpatch_t_partition_pk") else {
+        return;
+    };
+    let empty = db.snapshot();
+    db.exec(&partitioned_table("pgpatch_t_partition_pk"));
+    db.exec("ALTER TABLE pgpatch_t_partition_pk.job_common ADD PRIMARY KEY (name, created_on);");
+    let with_tables = db.snapshot();
+    assert!(
+        with_tables.schemas["pgpatch_t_partition_pk"].tables["job_common"]
+            .constraints
+            .contains_key("job_common_pkey")
+    );
+
+    db.apply(&diff::diff(&with_tables, &empty))
+        .expect("drop all");
+    assert_eq!(db.snapshot(), empty);
+    db.apply(&diff::diff(&empty, &with_tables))
+        .expect("recreate with partition-local pkey");
+    assert_eq!(db.snapshot(), with_tables);
+}
+
+#[test]
+fn attach_and_detach_with_matching_check_round_trip() {
+    let Some(mut db) = TestSchema::new("pgpatch_t_attach_check") else {
+        return;
+    };
+    db.exec(
+        "CREATE TABLE pgpatch_t_attach_check.p (id int NOT NULL, CONSTRAINT ck CHECK (id > 0)) PARTITION BY RANGE (id); \
+         CREATE TABLE pgpatch_t_attach_check.c (id int NOT NULL, CONSTRAINT ck CHECK (id > 0));",
+    );
+    let detached = db.snapshot();
+    db.exec("ALTER TABLE pgpatch_t_attach_check.p ATTACH PARTITION pgpatch_t_attach_check.c FOR VALUES FROM (1) TO (10);");
+    let attached = db.snapshot();
+    // Attaching merges the child's own CHECK into the parent's clone, which
+    // is no longer snapshotted on the child.
+    assert!(
+        !attached.schemas["pgpatch_t_attach_check"].tables["c"]
+            .constraints
+            .contains_key("ck")
+    );
+
+    db.apply(&diff::diff(&attached, &detached))
+        .expect("detach must succeed");
+    assert_eq!(db.snapshot(), detached);
+    db.apply(&diff::diff(&detached, &attached))
+        .expect("attach must succeed");
+    assert_eq!(db.snapshot(), attached);
+}
+
+#[test]
+fn detached_partition_can_drop_a_column_in_the_same_patch() {
+    let Some(mut db) = TestSchema::new("pgpatch_t_detach_drop") else {
+        return;
+    };
+    db.exec(&partitioned_table("pgpatch_t_detach_drop"));
+    let attached = db.snapshot();
+    db.exec(
+        "ALTER TABLE pgpatch_t_detach_drop.job DETACH PARTITION pgpatch_t_detach_drop.job_common; \
+         ALTER TABLE pgpatch_t_detach_drop.job_common DROP COLUMN created_on;",
+    );
+    let detached_and_narrowed = db.snapshot();
+
+    db.apply(&diff::diff(&detached_and_narrowed, &attached))
+        .expect("re-add column and attach");
+    assert_eq!(db.snapshot(), attached);
+    db.apply(&diff::diff(&attached, &detached_and_narrowed))
+        .expect("detach then drop column");
+    assert_eq!(db.snapshot(), detached_and_narrowed);
+}
+
+#[test]
+fn attach_and_detach_with_matching_index_round_trip() {
+    let Some(mut db) = TestSchema::new("pgpatch_t_attach_index") else {
+        return;
+    };
+    db.exec(
+        "CREATE TABLE pgpatch_t_attach_index.p (id int NOT NULL, v text) PARTITION BY RANGE (id); \
+         CREATE INDEX p_v_idx ON pgpatch_t_attach_index.p (v); \
+         CREATE TABLE pgpatch_t_attach_index.c (id int NOT NULL, v text); \
+         CREATE INDEX c_v_idx ON pgpatch_t_attach_index.c (v);",
+    );
+    let detached = db.snapshot();
+    db.exec("ALTER TABLE pgpatch_t_attach_index.p ATTACH PARTITION pgpatch_t_attach_index.c FOR VALUES FROM (1) TO (10);");
+    let attached = db.snapshot();
+    // The child's matching index is absorbed into the parent's on attach and
+    // no longer snapshotted on the child.
+    assert!(
+        attached.schemas["pgpatch_t_attach_index"].tables["c"]
+            .indexes
+            .is_empty()
+    );
+
+    db.apply(&diff::diff(&attached, &detached))
+        .expect("detach must succeed");
+    assert_eq!(db.snapshot(), detached);
+    db.apply(&diff::diff(&detached, &attached))
+        .expect("attach must succeed");
+    assert_eq!(db.snapshot(), attached);
 }
