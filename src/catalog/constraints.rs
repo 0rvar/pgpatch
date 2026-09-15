@@ -7,11 +7,17 @@ pub fn fetch(client: &mut Client, table_oid: u32) -> Result<BTreeMap<String, Con
     // contype: p=primary, f=foreign key, u=unique, c=check, x=exclusion, t=trigger.
     // Primary keys and uniques are also indexes — we keep them as constraints
     // here and let the index path skip the matching index by name.
+    //
+    // A constraint declared on a partitioned parent is cloned onto every
+    // partition with conislocal = false. Those clones are created and dropped
+    // through the parent (Postgres rejects dropping them on the partition),
+    // so they are skipped here. A constraint the partition declares itself
+    // stays conislocal = true even once the parent gains a matching one.
     let rows = client
         .query(
             "SELECT conname, contype, pg_get_constraintdef(oid, true) AS def \
              FROM pg_constraint \
-             WHERE conrelid = $1 \
+             WHERE conrelid = $1 AND conislocal \
              ORDER BY conname",
             &[&table_oid],
         )
