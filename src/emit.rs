@@ -5,10 +5,11 @@ use crate::model::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
-/// One pending view DROP/CREATE statement, paired with the name and
-/// dependency list needed to topo-sort the bucket before flushing.
+/// One pending DROP/CREATE statement, paired with the name and dependency
+/// list needed to topo-sort its bucket before flushing. Views depend on the
+/// views they select from; a partition depends on its parent table.
 #[derive(Debug, Clone)]
-struct ViewSlot {
+struct Slot {
     qual: String,
     depends_on: Vec<String>,
     sql: String,
@@ -55,7 +56,7 @@ struct Buckets {
     // Drop order (most dependent first).
     drop_policies: Vec<String>,
     drop_triggers: Vec<String>,
-    drop_views: Vec<ViewSlot>,
+    drop_views: Vec<Slot>,
     drop_constraints: Vec<String>,
     drop_indexes: Vec<String>,
     drop_columns: Vec<String>,
@@ -72,11 +73,11 @@ struct Buckets {
     create_types: Vec<String>,
     create_sequences: Vec<String>,
     create_functions: Vec<String>,
-    create_tables: Vec<String>,
+    create_tables: Vec<Slot>,
     create_columns: Vec<String>,
     create_constraints: Vec<String>,
     create_indexes: Vec<String>,
-    create_views: Vec<ViewSlot>,
+    create_views: Vec<Slot>,
     create_triggers: Vec<String>,
     create_policies: Vec<String>,
 
@@ -95,7 +96,7 @@ impl Buckets {
         v.extend(self.drop_triggers);
         // Drops go in *reverse* topo order: an upstream view (the one others
         // SELECT from) must outlive its dependents during the drop phase.
-        v.extend(topo_sort_views(&self.drop_views, true));
+        v.extend(topo_sort(&self.drop_views, true));
         v.extend(self.drop_constraints);
         v.extend(self.drop_indexes);
         v.extend(self.drop_columns);
@@ -113,13 +114,13 @@ impl Buckets {
         v.extend(self.create_types);
         v.extend(self.create_sequences);
         v.extend(self.create_functions);
-        v.extend(self.create_tables);
+        v.extend(topo_sort(&self.create_tables, false));
         v.extend(self.create_columns);
         v.extend(self.create_constraints);
         v.extend(self.create_indexes);
         // Creates go in topo order: a view's dependencies must already exist
         // by the time we run its CREATE.
-        v.extend(topo_sort_views(&self.create_views, false));
+        v.extend(topo_sort(&self.create_views, false));
         v.extend(self.create_triggers);
         v.extend(self.create_policies);
 
@@ -137,7 +138,7 @@ impl Buckets {
     }
 }
 
-/// Topologically sort view slots by their `depends_on` edges, so each view
+/// Topologically sort slots by their `depends_on` edges, so each one
 /// appears after all its dependencies. Pass `reverse=true` for the drop pass
 /// to invert the order. Dependencies pointing outside the slot set (e.g. to
 /// base tables or to views unaffected by this diff) are ignored — only
@@ -146,25 +147,25 @@ impl Buckets {
 /// Cycles can't normally exist between Postgres views (the catalog rejects
 /// them) but we tolerate them by emitting any unresolved tail in input
 /// order, so a malformed input doesn't crash the emitter.
-fn topo_sort_views(slots: &[ViewSlot], reverse: bool) -> Vec<String> {
+fn topo_sort(slots: &[Slot], reverse: bool) -> Vec<String> {
     if slots.len() < 2 {
         return slots.iter().map(|s| s.sql.clone()).collect();
     }
 
     let names: BTreeSet<&str> = slots.iter().map(|s| s.qual.as_str()).collect();
-    let by_name: BTreeMap<&str, &ViewSlot> = slots.iter().map(|s| (s.qual.as_str(), s)).collect();
+    let by_name: BTreeMap<&str, &Slot> = slots.iter().map(|s| (s.qual.as_str(), s)).collect();
 
     let mut visited: BTreeSet<&str> = BTreeSet::new();
     let mut on_stack: BTreeSet<&str> = BTreeSet::new();
-    let mut order: Vec<&ViewSlot> = Vec::with_capacity(slots.len());
+    let mut order: Vec<&Slot> = Vec::with_capacity(slots.len());
 
     fn visit<'a>(
         node: &'a str,
-        by_name: &BTreeMap<&'a str, &'a ViewSlot>,
+        by_name: &BTreeMap<&'a str, &'a Slot>,
         names: &BTreeSet<&'a str>,
         visited: &mut BTreeSet<&'a str>,
         on_stack: &mut BTreeSet<&'a str>,
-        order: &mut Vec<&'a ViewSlot>,
+        order: &mut Vec<&'a Slot>,
     ) {
         if visited.contains(node) || on_stack.contains(node) {
             return;
@@ -236,7 +237,17 @@ fn bucket(c: &Change, b: &mut Buckets) {
         }
 
         Change::TableAdded { qual, table } => {
-            b.create_tables.push(emit_create_table(qual, table));
+            // A partition is created with PARTITION OF, so its parent must
+            // exist first; the bucket is topo-sorted on that edge at flush.
+            b.create_tables.push(Slot {
+                qual: qual.to_string(),
+                depends_on: table
+                    .partition_of
+                    .iter()
+                    .map(|p| p.parent.clone())
+                    .collect(),
+                sql: emit_create_table(qual, table),
+            });
             // Indexes / triggers / policies on a freshly-created table are
             // not in `Change::IndexAdded` etc. — they're inside the
             // TableAdded payload. Emit them in the right phase.
@@ -410,7 +421,7 @@ fn bucket(c: &Change, b: &mut Buckets) {
             } else {
                 "VIEW"
             };
-            b.create_views.push(ViewSlot {
+            b.create_views.push(Slot {
                 qual: format!("{}.{}", qual.schema, qual.name),
                 depends_on: view.depends_on.clone(),
                 sql: format!(
@@ -432,7 +443,7 @@ fn bucket(c: &Change, b: &mut Buckets) {
             } else {
                 "VIEW"
             };
-            b.drop_views.push(ViewSlot {
+            b.drop_views.push(Slot {
                 qual: format!("{}.{}", qual.schema, qual.name),
                 depends_on: depends_on.clone(),
                 sql: format!("DROP {} {};", kw, qual_ident(qual)),
@@ -450,12 +461,12 @@ fn bucket(c: &Change, b: &mut Buckets) {
                 "VIEW"
             };
             let qual_str = format!("{}.{}", qual.schema, qual.name);
-            b.drop_views.push(ViewSlot {
+            b.drop_views.push(Slot {
                 qual: qual_str.clone(),
                 depends_on: before.depends_on.clone(),
                 sql: format!("DROP {} {};", kw, qual_ident(qual)),
             });
-            b.create_views.push(ViewSlot {
+            b.create_views.push(Slot {
                 qual: qual_str,
                 depends_on: after.depends_on.clone(),
                 sql: format!(

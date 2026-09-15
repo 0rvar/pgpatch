@@ -462,3 +462,26 @@ fn table_with_primary_key_is_created_from_scratch() {
         .expect("creating a table with a primary key must succeed");
     assert_eq!(db.snapshot(), with_table);
 }
+
+#[test]
+fn partition_sorting_before_its_parent_is_created_from_scratch() {
+    let Some(mut db) = TestSchema::new("pgpatch_t_create_order") else {
+        return;
+    };
+    let empty = db.snapshot();
+    db.exec(
+        "CREATE TABLE pgpatch_t_create_order.z_job (name text NOT NULL) PARTITION BY LIST (name); \
+         CREATE TABLE pgpatch_t_create_order.a_part PARTITION OF pgpatch_t_create_order.z_job DEFAULT;",
+    );
+    let with_tables = db.snapshot();
+
+    db.apply(&diff::diff(&with_tables, &empty))
+        .expect("dropping the parent must succeed");
+    assert_eq!(db.snapshot(), empty);
+
+    let to_with = diff::diff(&empty, &with_tables);
+    assert!(!to_with.is_empty());
+    db.apply(&to_with)
+        .expect("parent must be created before its partition");
+    assert_eq!(db.snapshot(), with_tables);
+}

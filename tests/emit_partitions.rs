@@ -292,3 +292,78 @@ fn child_with_indexes_emits_create_partition_then_indexes() {
         "CREATE TABLE must precede CREATE INDEX; got:\n{out}"
     );
 }
+
+#[test]
+fn partition_is_created_after_its_parent_regardless_of_name_order() {
+    let parent = Table {
+        columns: vec![col("name", "text", false)],
+        partition_by: Some(PartitionBy {
+            strategy: "LIST".into(),
+            key: "(name)".into(),
+        }),
+        ..Default::default()
+    };
+    let child = Table {
+        columns: vec![col("name", "text", false)],
+        partition_of: Some(PartitionInfo {
+            parent: "pgboss.z_job".into(),
+            bound: "DEFAULT".into(),
+        }),
+        ..Default::default()
+    };
+    // Diff order is alphabetical: "a_part" comes before "z_job".
+    let out = sql(&[
+        Change::TableAdded {
+            qual: qual("pgboss", "a_part"),
+            table: child,
+        },
+        Change::TableAdded {
+            qual: qual("pgboss", "z_job"),
+            table: parent,
+        },
+    ]);
+    let parent_at = out
+        .find("CREATE TABLE pgboss.z_job (")
+        .expect("parent created");
+    let child_at = out
+        .find("CREATE TABLE pgboss.a_part PARTITION OF pgboss.z_job DEFAULT;")
+        .expect("child created");
+    assert!(parent_at < child_at, "parent must come first; got:\n{out}");
+}
+
+#[test]
+fn partition_in_another_schema_is_created_after_its_parent() {
+    let parent = Table {
+        columns: vec![col("name", "text", false)],
+        partition_by: Some(PartitionBy {
+            strategy: "LIST".into(),
+            key: "(name)".into(),
+        }),
+        ..Default::default()
+    };
+    let child = Table {
+        columns: vec![col("name", "text", false)],
+        partition_of: Some(PartitionInfo {
+            parent: "z_schema.job".into(),
+            bound: "DEFAULT".into(),
+        }),
+        ..Default::default()
+    };
+    let out = sql(&[
+        Change::TableAdded {
+            qual: qual("a_schema", "job_archive"),
+            table: child,
+        },
+        Change::TableAdded {
+            qual: qual("z_schema", "job"),
+            table: parent,
+        },
+    ]);
+    let parent_at = out
+        .find("CREATE TABLE z_schema.job (")
+        .expect("parent created");
+    let child_at = out
+        .find("CREATE TABLE a_schema.job_archive PARTITION OF")
+        .expect("child created");
+    assert!(parent_at < child_at, "parent must come first; got:\n{out}");
+}
