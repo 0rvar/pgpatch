@@ -238,3 +238,209 @@ fn added_parent_and_partition_are_both_created() {
         vec!["+ pgboss.job", "+ pgboss.job_common"]
     );
 }
+
+fn standalone(columns: Vec<Column>) -> Table {
+    Table {
+        columns,
+        ..Default::default()
+    }
+}
+
+fn column_changes_with_defaults(changes: &[Change]) -> Vec<String> {
+    changes
+        .iter()
+        .filter_map(|c| match c {
+            Change::ColumnAdded { table, column } => Some(format!(
+                "+ {table}.{} {}",
+                column.name,
+                column.default.as_deref().unwrap_or("-")
+            )),
+            Change::ColumnRemoved { table, name } => Some(format!("- {table}.{name}")),
+            Change::ColumnChanged {
+                table,
+                name,
+                before,
+                after,
+            } => Some(format!(
+                "~ {table}.{name} {} -> {}",
+                before.default.as_deref().unwrap_or("-"),
+                after.default.as_deref().unwrap_or("-")
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn detached_table_keeps_its_own_column_drop() {
+    let before = schema(
+        parent(vec![col("name", None), col("b", None)]),
+        partition(vec![col("name", None), col("b", None)]),
+    );
+    let after = schema(
+        parent(vec![col("name", None), col("b", None)]),
+        standalone(vec![col("name", None)]),
+    );
+
+    assert_eq!(
+        column_changes(&diff(&before, &after)),
+        vec!["- pgboss.job_common.b"]
+    );
+}
+
+#[test]
+fn table_being_attached_keeps_its_own_column_add() {
+    let before = schema(
+        parent(vec![col("name", None), col("v", None)]),
+        standalone(vec![col("name", None)]),
+    );
+    let after = schema(
+        parent(vec![col("name", None), col("v", None)]),
+        partition(vec![col("name", None), col("v", None)]),
+    );
+
+    assert_eq!(
+        column_changes(&diff(&before, &after)),
+        vec!["+ pgboss.job_common.v"]
+    );
+}
+
+#[test]
+fn partition_of_absent_parent_keeps_its_column_changes() {
+    let before = schema_of(vec![(
+        "job_common",
+        partition(vec![col("name", None), col("b", None)]),
+    )]);
+    let after = schema_of(vec![("job_common", partition(vec![col("name", None)]))]);
+
+    assert_eq!(
+        column_changes(&diff(&before, &after)),
+        vec!["- pgboss.job_common.b"]
+    );
+}
+
+#[test]
+fn partition_default_differing_from_parents_new_default_is_kept_after_the_parent() {
+    let before = schema(
+        parent(vec![col("name", None)]),
+        partition(vec![col("name", None)]),
+    );
+    let after = schema(
+        parent(vec![col("name", Some("'p'::text"))]),
+        partition(vec![col("name", Some("'c'::text"))]),
+    );
+
+    assert_eq!(
+        column_changes_with_defaults(&diff(&before, &after)),
+        vec![
+            "~ pgboss.job.name - -> 'p'::text",
+            "~ pgboss.job_common.name - -> 'c'::text"
+        ]
+    );
+}
+
+#[test]
+fn added_column_with_partition_override_becomes_a_column_change() {
+    let before = schema(
+        parent(vec![col("name", None)]),
+        partition(vec![col("name", None)]),
+    );
+    let after = schema(
+        parent(vec![col("name", None), col("v", Some("1"))]),
+        partition(vec![col("name", None), col("v", Some("2"))]),
+    );
+
+    assert_eq!(
+        column_changes_with_defaults(&diff(&before, &after)),
+        vec!["+ pgboss.job.v 1", "~ pgboss.job_common.v 1 -> 2"]
+    );
+}
+
+#[test]
+fn cross_schema_parent_covers_its_partition() {
+    fn two_schemas(job: Table, archive: Table) -> Schema {
+        let mut pgboss = BTreeMap::new();
+        pgboss.insert("job".to_string(), job);
+        let mut other = BTreeMap::new();
+        other.insert("job_archive".to_string(), archive);
+        let mut schemas = BTreeMap::new();
+        schemas.insert(
+            "pgboss".to_string(),
+            Namespace {
+                tables: pgboss,
+                ..Default::default()
+            },
+        );
+        schemas.insert(
+            "other".to_string(),
+            Namespace {
+                tables: other,
+                ..Default::default()
+            },
+        );
+        Schema {
+            schemas,
+            ..Default::default()
+        }
+    }
+    let before = two_schemas(
+        parent(vec![col("name", None), col("b", None)]),
+        partition(vec![col("name", None), col("b", None)]),
+    );
+    let after = two_schemas(
+        parent(vec![col("name", None)]),
+        partition(vec![col("name", None)]),
+    );
+
+    assert_eq!(
+        column_changes(&diff(&before, &after)),
+        vec!["- pgboss.job.b"]
+    );
+}
+
+#[test]
+fn multi_level_partitioning_emits_once_on_the_root() {
+    fn mid(columns: Vec<Column>) -> Table {
+        Table {
+            columns,
+            partition_by: Some(PartitionBy {
+                strategy: "RANGE".into(),
+                key: "(name)".into(),
+            }),
+            partition_of: Some(PartitionInfo {
+                parent: "pgboss.job".into(),
+                bound: "DEFAULT".into(),
+            }),
+            ..Default::default()
+        }
+    }
+    fn leaf(columns: Vec<Column>) -> Table {
+        Table {
+            columns,
+            partition_of: Some(PartitionInfo {
+                parent: "pgboss.mid".into(),
+                bound: "DEFAULT".into(),
+            }),
+            ..Default::default()
+        }
+    }
+    let two = || vec![col("name", None), col("b", None)];
+    let one = || vec![col("name", None)];
+    let before = schema_of(vec![
+        ("job", parent(two())),
+        ("mid", mid(two())),
+        ("leaf", leaf(two())),
+    ]);
+    let after = schema_of(vec![
+        ("job", parent(one())),
+        ("mid", mid(one())),
+        ("leaf", leaf(one())),
+    ]);
+    assert_eq!(
+        column_changes(&diff(&before, &after)),
+        vec!["- pgboss.job.b"]
+    );
+
+    let gone = schema_of(vec![]);
+    assert_eq!(table_changes(&diff(&before, &gone)), vec!["- pgboss.job"]);
+}

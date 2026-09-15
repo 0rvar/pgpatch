@@ -245,72 +245,137 @@ pub fn diff(left: &Schema, right: &Schema) -> Vec<Change> {
 /// inherited columns on both tables, so a parent change produces a mirrored
 /// change on each partition. Applying the mirror after the parent either
 /// errors ("cannot drop inherited column", or the column is already gone) or
-/// is a no-op, so drop it here. Add/remove is always suppressed on a
-/// partition. A `ColumnChanged` is kept when the parent has no change for
-/// that column — partition-local defaults and NOT NULL are legitimate and
-/// only expressible on the partition.
+/// is a no-op, so drop it here.
 ///
-/// Likewise `DROP TABLE` on a partitioned parent takes its partitions with
-/// it, so a partition's own `TableRemoved` is dropped when the parent is
-/// removed too. Removing a partition alone (the parent stays) is kept.
+/// A table only counts as a partition when both snapshots agree on its
+/// parent and that parent is in the snapshot. A table being attached or
+/// detached in this diff is standalone at one end and needs its own column
+/// statements there; a parent outside the snapshot cannot cover anything, so
+/// its partitions' changes stay in and fail loudly at apply time instead of
+/// vanishing from the diff.
+///
+/// A column change on a partition is covered only when the parent's change
+/// leaves the column in exactly the state the partition wants. Otherwise the
+/// partition-local remainder (typically a per-partition default) is kept and
+/// moved after the parent's changes, since emit preserves diff order within a
+/// phase and the parent's recursive `ALTER` would otherwise clobber it. A
+/// column the parent adds with a different default becomes an `ALTER COLUMN`
+/// on the partition instead of the impossible `ADD COLUMN`.
+///
+/// `DROP TABLE` on a partitioned parent takes its partitions with it, so a
+/// partition's own `TableRemoved` is dropped when the parent is removed too.
+/// Removing a partition alone (the parent stays) is kept.
 fn suppress_partition_changes_covered_by_parent(
     left: &Schema,
     right: &Schema,
     changes: Vec<Change>,
 ) -> Vec<Change> {
-    // "schema.partition" -> "schema.parent", from whichever side knows it.
-    let mut parents: BTreeMap<String, String> = BTreeMap::new();
-    for schema in [right, left] {
-        for (sname, ns) in &schema.schemas {
-            for (tname, table) in &ns.tables {
-                if let Some(info) = &table.partition_of {
-                    parents
-                        .entry(format!("{sname}.{tname}"))
-                        .or_insert_with(|| info.parent.clone());
-                }
+    fn table<'a>(schema: &'a Schema, flat: &str) -> Option<&'a Table> {
+        let (sname, tname) = flat.split_once('.')?;
+        schema.schemas.get(sname)?.tables.get(tname)
+    }
+    fn parent_of<'a>(schema: &'a Schema, flat: &str) -> Option<&'a str> {
+        table(schema, flat)?
+            .partition_of
+            .as_ref()
+            .map(|p| p.parent.as_str())
+    }
+    // Parent of a partition that is one on both sides, with the parent present.
+    let stable_parent = |qual: &QualifiedName| -> Option<String> {
+        let flat = qual.to_string();
+        let parent = parent_of(right, &flat)?;
+        if parent_of(left, &flat) != Some(parent) {
+            return None;
+        }
+        (table(left, parent).is_some() && table(right, parent).is_some())
+            .then(|| parent.to_string())
+    };
+
+    let mut removed_tables: BTreeSet<String> = BTreeSet::new();
+    let mut removed_columns: BTreeSet<(String, String)> = BTreeSet::new();
+    // (table, column) -> the column as it looks after the change.
+    let mut column_after: BTreeMap<(String, String), Column> = BTreeMap::new();
+    for c in &changes {
+        match c {
+            Change::TableRemoved { qual } => {
+                removed_tables.insert(qual.to_string());
             }
+            Change::ColumnRemoved { table, name } => {
+                removed_columns.insert((table.to_string(), name.clone()));
+            }
+            Change::ColumnAdded { table, column } => {
+                column_after.insert((table.to_string(), column.name.clone()), column.clone());
+            }
+            Change::ColumnChanged {
+                table, name, after, ..
+            } => {
+                column_after.insert((table.to_string(), name.clone()), after.clone());
+            }
+            _ => {}
         }
     }
-    if parents.is_empty() {
+    if removed_tables.is_empty() && removed_columns.is_empty() && column_after.is_empty() {
         return changes;
     }
 
-    let changed_columns: BTreeSet<(String, String)> = changes
-        .iter()
-        .filter_map(|c| match c {
-            Change::ColumnAdded { table, column } => Some((table.to_string(), column.name.clone())),
-            Change::ColumnRemoved { table, name } | Change::ColumnChanged { table, name, .. } => {
-                Some((table.to_string(), name.clone()))
+    let mut out = Vec::with_capacity(changes.len());
+    let mut partition_local = Vec::new();
+    for c in changes {
+        match c {
+            Change::TableRemoved { ref qual } => {
+                let covered = parent_of(left, &qual.to_string())
+                    .is_some_and(|parent| removed_tables.contains(parent));
+                if !covered {
+                    out.push(c);
+                }
             }
-            _ => None,
-        })
-        .collect();
-
-    let removed_tables: BTreeSet<String> = changes
-        .iter()
-        .filter_map(|c| match c {
-            Change::TableRemoved { qual } => Some(qual.to_string()),
-            _ => None,
-        })
-        .collect();
-
-    changes
-        .into_iter()
-        .filter(|c| match c {
-            Change::TableRemoved { qual } => match parents.get(&qual.to_string()) {
-                Some(parent) => !removed_tables.contains(parent),
-                None => true,
-            },
-            Change::ColumnAdded { table, .. } | Change::ColumnRemoved { table, .. } => {
-                !parents.contains_key(&table.to_string())
+            Change::ColumnRemoved {
+                ref table,
+                ref name,
+            } => {
+                let covered = stable_parent(table)
+                    .is_some_and(|parent| removed_columns.contains(&(parent, name.clone())));
+                if !covered {
+                    out.push(c);
+                }
             }
-            Change::ColumnChanged { table, name, .. } => match parents.get(&table.to_string()) {
-                Some(parent) => !changed_columns.contains(&(parent.clone(), name.clone())),
-                None => true,
+            Change::ColumnAdded {
+                ref table,
+                ref column,
+            } => {
+                let Some(parent) = stable_parent(table) else {
+                    out.push(c);
+                    continue;
+                };
+                match column_after.get(&(parent, column.name.clone())) {
+                    Some(inherited) if inherited == column => {}
+                    Some(inherited) => partition_local.push(Change::ColumnChanged {
+                        table: table.clone(),
+                        name: column.name.clone(),
+                        before: inherited.clone(),
+                        after: column.clone(),
+                    }),
+                    None => out.push(c),
+                }
+            }
+            Change::ColumnChanged {
+                ref table,
+                ref name,
+                ref after,
+                ..
+            } => match stable_parent(table) {
+                None => out.push(c),
+                Some(parent) => match column_after.get(&(parent, name.clone())) {
+                    Some(inherited) if inherited == after => {}
+                    Some(_) => partition_local.push(c),
+                    None => out.push(c),
+                },
             },
-            _ => true,
-        })
-        .collect()
+            _ => out.push(c),
+        }
+    }
+    out.extend(partition_local);
+    out
 }
 
 fn diff_extensions(

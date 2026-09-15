@@ -251,7 +251,46 @@ fn dropped_parent_table_takes_its_partitions_with_it() {
     assert_eq!(db.snapshot(), empty);
 
     let to_with = diff::diff(&empty, &with_tables);
+    assert!(!to_with.is_empty());
     db.apply(&to_with)
         .expect("creating parent and partition must succeed");
     assert_eq!(db.snapshot(), with_tables);
+}
+
+#[test]
+fn partition_local_default_survives_a_parent_default_change() {
+    let Some(mut db) = TestSchema::new("pgpatch_t_local_default") else {
+        return;
+    };
+    db.exec(&partitioned_table("pgpatch_t_local_default"));
+    let plain = db.snapshot();
+
+    // The parent's SET DEFAULT recurses into the partition; the partition
+    // then overrides it. Both states must round-trip, with the partition's
+    // own default applied after the parent's.
+    db.exec(
+        "ALTER TABLE pgpatch_t_local_default.job ALTER COLUMN name SET DEFAULT 'p'; \
+         ALTER TABLE pgpatch_t_local_default.job_common ALTER COLUMN name SET DEFAULT 'c';",
+    );
+    let overridden = db.snapshot();
+    let child_default = |snap: &Schema| {
+        snap.schemas["pgpatch_t_local_default"].tables["job_common"]
+            .columns
+            .iter()
+            .find(|c| c.name == "name")
+            .and_then(|c| c.default.clone())
+    };
+    assert_eq!(child_default(&overridden).as_deref(), Some("'c'::text"));
+
+    let to_plain = diff::diff(&overridden, &plain);
+    assert!(!to_plain.is_empty());
+    db.apply(&to_plain)
+        .expect("clearing both defaults must succeed");
+    assert_eq!(db.snapshot(), plain);
+
+    let to_overridden = diff::diff(&plain, &overridden);
+    assert!(!to_overridden.is_empty());
+    db.apply(&to_overridden)
+        .expect("setting both defaults must succeed");
+    assert_eq!(db.snapshot(), overridden);
 }
