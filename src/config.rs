@@ -45,7 +45,11 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { ignore_grants: false, ignore_comments: false, ignore_partitions: Vec::new() }
+        Self {
+            ignore_grants: false,
+            ignore_comments: false,
+            ignore_partitions: Vec::new(),
+        }
     }
 }
 
@@ -53,8 +57,8 @@ impl Config {
     pub fn from_path(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("reading config {}", path.display()))?;
-        let cfg: Self = toml::from_str(&raw)
-            .with_context(|| format!("parsing config {}", path.display()))?;
+        let cfg: Self =
+            toml::from_str(&raw).with_context(|| format!("parsing config {}", path.display()))?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -69,8 +73,7 @@ impl Config {
     pub fn build_exclude_set(patterns: &[String]) -> Result<GlobSet> {
         let mut b = GlobSetBuilder::new();
         for p in patterns {
-            let g = Glob::new(p)
-                .with_context(|| format!("invalid glob pattern: {p}"))?;
+            let g = Glob::new(p).with_context(|| format!("invalid glob pattern: {p}"))?;
             b.add(g);
         }
         b.build().context("building globset")

@@ -1,5 +1,7 @@
 use crate::diff::Change;
-use crate::model::{Column, Function, GrantEntry, Identity, QualifiedName, Sequence, Table, UserType};
+use crate::model::{
+    Column, Function, GrantEntry, Identity, QualifiedName, Sequence, Table, UserType,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
@@ -203,10 +205,14 @@ fn topo_sort_views(slots: &[ViewSlot], reverse: bool) -> Vec<String> {
 fn bucket(c: &Change, b: &mut Buckets) {
     match c {
         Change::SchemaAdded { name } => {
-            b.create_schemas.push(format!("CREATE SCHEMA IF NOT EXISTS {};", quote_ident(name)));
+            b.create_schemas.push(format!(
+                "CREATE SCHEMA IF NOT EXISTS {};",
+                quote_ident(name)
+            ));
         }
         Change::SchemaRemoved { name } => {
-            b.drop_schemas.push(format!("DROP SCHEMA {} CASCADE;", quote_ident(name)));
+            b.drop_schemas
+                .push(format!("DROP SCHEMA {} CASCADE;", quote_ident(name)));
         }
 
         Change::ExtensionAdded { name, extension } => {
@@ -218,7 +224,8 @@ fn bucket(c: &Change, b: &mut Buckets) {
             ));
         }
         Change::ExtensionRemoved { name } => {
-            b.drop_extensions.push(format!("DROP EXTENSION {};", quote_ident(name)));
+            b.drop_extensions
+                .push(format!("DROP EXTENSION {};", quote_ident(name)));
         }
         Change::ExtensionChanged { name, after, .. } => {
             b.extension_changes.push(format!(
@@ -277,7 +284,12 @@ fn bucket(c: &Change, b: &mut Buckets) {
                 quote_ident(name),
             ));
         }
-        Change::ColumnChanged { table, name, before, after } => {
+        Change::ColumnChanged {
+            table,
+            name,
+            before,
+            after,
+        } => {
             b.column_changes
                 .push(emit_column_change(table, name, before, after));
         }
@@ -321,7 +333,9 @@ fn bucket(c: &Change, b: &mut Buckets) {
                 quote_ident(name),
             ));
         }
-        Change::IndexChanged { table, name, after, .. } => {
+        Change::IndexChanged {
+            table, name, after, ..
+        } => {
             b.drop_indexes.push(format!(
                 "DROP INDEX IF EXISTS {}.{};",
                 quote_ident(&table.schema),
@@ -330,7 +344,11 @@ fn bucket(c: &Change, b: &mut Buckets) {
             b.create_indexes.push(format!("{};", after.definition));
         }
 
-        Change::ConstraintAdded { table, name, constraint } => {
+        Change::ConstraintAdded {
+            table,
+            name,
+            constraint,
+        } => {
             b.create_constraints.push(format!(
                 "ALTER TABLE {} ADD CONSTRAINT {} {};",
                 qual_ident(table),
@@ -345,7 +363,9 @@ fn bucket(c: &Change, b: &mut Buckets) {
                 quote_ident(name),
             ));
         }
-        Change::ConstraintChanged { table, name, after, .. } => {
+        Change::ConstraintChanged {
+            table, name, after, ..
+        } => {
             b.drop_constraints.push(format!(
                 "ALTER TABLE {} DROP CONSTRAINT {};",
                 qual_ident(table),
@@ -372,8 +392,16 @@ fn bucket(c: &Change, b: &mut Buckets) {
             ));
         }
 
-        Change::ViewAdded { qual, materialized, view } => {
-            let kw = if *materialized { "MATERIALIZED VIEW" } else { "VIEW" };
+        Change::ViewAdded {
+            qual,
+            materialized,
+            view,
+        } => {
+            let kw = if *materialized {
+                "MATERIALIZED VIEW"
+            } else {
+                "VIEW"
+            };
             b.create_views.push(ViewSlot {
                 qual: format!("{}.{}", qual.schema, qual.name),
                 depends_on: view.depends_on.clone(),
@@ -386,16 +414,33 @@ fn bucket(c: &Change, b: &mut Buckets) {
                 ),
             });
         }
-        Change::ViewRemoved { qual, materialized, depends_on } => {
-            let kw = if *materialized { "MATERIALIZED VIEW" } else { "VIEW" };
+        Change::ViewRemoved {
+            qual,
+            materialized,
+            depends_on,
+        } => {
+            let kw = if *materialized {
+                "MATERIALIZED VIEW"
+            } else {
+                "VIEW"
+            };
             b.drop_views.push(ViewSlot {
                 qual: format!("{}.{}", qual.schema, qual.name),
                 depends_on: depends_on.clone(),
                 sql: format!("DROP {} {};", kw, qual_ident(qual)),
             });
         }
-        Change::ViewChanged { qual, materialized, before, after } => {
-            let kw = if *materialized { "MATERIALIZED VIEW" } else { "VIEW" };
+        Change::ViewChanged {
+            qual,
+            materialized,
+            before,
+            after,
+        } => {
+            let kw = if *materialized {
+                "MATERIALIZED VIEW"
+            } else {
+                "VIEW"
+            };
             let qual_str = format!("{}.{}", qual.schema, qual.name);
             b.drop_views.push(ViewSlot {
                 qual: qual_str.clone(),
@@ -416,13 +461,18 @@ fn bucket(c: &Change, b: &mut Buckets) {
         }
 
         Change::SequenceAdded { qual, sequence } => {
-            b.create_sequences.push(emit_create_sequence(qual, sequence));
+            b.create_sequences
+                .push(emit_create_sequence(qual, sequence));
         }
         Change::SequenceRemoved { qual } => {
             b.drop_sequences
                 .push(format!("DROP SEQUENCE {};", qual_ident(qual)));
         }
-        Change::SequenceChanged { qual, before, after } => {
+        Change::SequenceChanged {
+            qual,
+            before,
+            after,
+        } => {
             b.sequence_changes
                 .push(emit_sequence_change(qual, before, after));
         }
@@ -431,9 +481,14 @@ fn bucket(c: &Change, b: &mut Buckets) {
             b.create_types.push(emit_create_type(qual, user_type));
         }
         Change::TypeRemoved { qual } => {
-            b.drop_types.push(format!("DROP TYPE {};", qual_ident(qual)));
+            b.drop_types
+                .push(format!("DROP TYPE {};", qual_ident(qual)));
         }
-        Change::TypeChanged { qual, before, after } => {
+        Change::TypeChanged {
+            qual,
+            before,
+            after,
+        } => {
             b.other_changes.push(emit_type_change(qual, before, after));
         }
 
@@ -448,17 +503,22 @@ fn bucket(c: &Change, b: &mut Buckets) {
                 qual_ident(table),
             ));
         }
-        Change::TriggerChanged { table, name, after, .. } => {
+        Change::TriggerChanged {
+            table, name, after, ..
+        } => {
             b.drop_triggers.push(format!(
                 "DROP TRIGGER {} ON {};",
                 quote_ident(name),
                 qual_ident(table),
             ));
-            b.create_triggers
-                .push(ensure_terminated(&after.definition));
+            b.create_triggers.push(ensure_terminated(&after.definition));
         }
 
-        Change::PolicyAdded { table, name, policy } => {
+        Change::PolicyAdded {
+            table,
+            name,
+            policy,
+        } => {
             b.create_policies
                 .push(emit_create_policy(table, name, policy));
         }
@@ -469,7 +529,9 @@ fn bucket(c: &Change, b: &mut Buckets) {
                 qual_ident(table),
             ));
         }
-        Change::PolicyChanged { table, name, after, .. } => {
+        Change::PolicyChanged {
+            table, name, after, ..
+        } => {
             b.drop_policies.push(format!(
                 "DROP POLICY {} ON {};",
                 quote_ident(name),
@@ -487,9 +549,8 @@ fn bucket(c: &Change, b: &mut Buckets) {
                 // ACL (EXECUTE to PUBLIC); revoke that first so the grants
                 // below are the complete story.
                 let ident = routine_ident(qual, function);
-                b.create_functions.push(format!(
-                    "REVOKE ALL ON ROUTINE {ident} FROM PUBLIC;",
-                ));
+                b.create_functions
+                    .push(format!("REVOKE ALL ON ROUTINE {ident} FROM PUBLIC;",));
                 for e in entries {
                     b.create_functions.push(emit_grant(&ident, e));
                 }
@@ -499,17 +560,18 @@ fn bucket(c: &Change, b: &mut Buckets) {
             // TODO: no dependency tracking — DROP FUNCTION fails if an
             // unchanged trigger or view still references this function;
             // pgpatch doesn't know about function dependents.
-            b.drop_functions.push(format!(
-                "DROP FUNCTION {};",
-                routine_ident(qual, function),
-            ));
+            b.drop_functions
+                .push(format!("DROP FUNCTION {};", routine_ident(qual, function),));
         }
-        Change::FunctionChanged { qual, before, after } => {
+        Change::FunctionChanged {
+            qual,
+            before,
+            after,
+        } => {
             // pg_get_functiondef emits CREATE OR REPLACE, so this works as
             // an in-place update for everything except signature changes
             // (those diff as Removed + Added instead).
-            b.other_changes
-                .push(ensure_terminated(&after.definition));
+            b.other_changes.push(ensure_terminated(&after.definition));
             if let Some(reference) = &after.acl {
                 if after.acl != before.acl {
                     b.other_changes.extend(emit_grant_reconciliation(
@@ -520,7 +582,11 @@ fn bucket(c: &Change, b: &mut Buckets) {
                 }
             }
         }
-        Change::FunctionGrantsChanged { qual, before, after } => {
+        Change::FunctionGrantsChanged {
+            qual,
+            before,
+            after,
+        } => {
             if let Some(reference) = &after.acl {
                 b.other_changes.extend(emit_grant_reconciliation(
                     &routine_ident(qual, after),
@@ -539,7 +605,11 @@ fn bucket(c: &Change, b: &mut Buckets) {
                 qual_ident(table),
             ));
         }
-        Change::PartitionOfChanged { table, before, after } => {
+        Change::PartitionOfChanged {
+            table,
+            before,
+            after,
+        } => {
             // ATTACH/DETACH is reversible without rebuilding, so emit those
             // when we can. A bound change on the same parent collapses to
             // DETACH then ATTACH with the new bound.
@@ -594,7 +664,11 @@ fn emit_create_table(qual: &QualifiedName, table: &Table) -> String {
 
     let mut s = String::new();
     let _ = writeln!(s, "CREATE TABLE {} (", qual_ident(qual));
-    let mut parts: Vec<String> = table.columns.iter().map(|c| format!("    {}", column_decl(c))).collect();
+    let mut parts: Vec<String> = table
+        .columns
+        .iter()
+        .map(|c| format!("    {}", column_decl(c)))
+        .collect();
     if let Some(pk) = &table.primary_key {
         parts.push(format!("    {}", pk_clause(&pk.definition)));
     }
@@ -647,7 +721,11 @@ fn emit_column_change(
         ));
     }
     if before.nullable != after.nullable {
-        let action = if after.nullable { "DROP NOT NULL" } else { "SET NOT NULL" };
+        let action = if after.nullable {
+            "DROP NOT NULL"
+        } else {
+            "SET NOT NULL"
+        };
         stmts.push(format!(
             "ALTER TABLE {} ALTER COLUMN {} {action};",
             qual_ident(table),
@@ -767,7 +845,11 @@ fn emit_sequence_change(qual: &QualifiedName, before: &Sequence, after: &Sequenc
         clauses.push(format!("CACHE {}", after.cache));
     }
     if before.cycle != after.cycle {
-        clauses.push(if after.cycle { "CYCLE".into() } else { "NO CYCLE".into() });
+        clauses.push(if after.cycle {
+            "CYCLE".into()
+        } else {
+            "NO CYCLE".into()
+        });
     }
     if before.owned_by != after.owned_by {
         match &after.owned_by {
@@ -803,15 +885,14 @@ fn emit_create_type(qual: &QualifiedName, t: &UserType) -> String {
                 fs.join(",\n"),
             )
         }
-        UserType::Domain { base_type, definition } => {
+        UserType::Domain {
+            base_type,
+            definition,
+        } => {
             // pg_get_constraintdef already emits the constraint clauses we
             // need; `definition` contains the full check chain or is empty.
             if definition.is_empty() {
-                format!(
-                    "CREATE DOMAIN {} AS {};",
-                    qual_ident(qual),
-                    base_type,
-                )
+                format!("CREATE DOMAIN {} AS {};", qual_ident(qual), base_type,)
             } else {
                 format!(
                     "CREATE DOMAIN {} AS {} {};",
@@ -821,7 +902,10 @@ fn emit_create_type(qual: &QualifiedName, t: &UserType) -> String {
                 )
             }
         }
-        UserType::Range { subtype, definition } => {
+        UserType::Range {
+            subtype,
+            definition,
+        } => {
             if definition.is_empty() {
                 format!(
                     "CREATE TYPE {} AS RANGE (SUBTYPE = {});",
@@ -874,11 +958,7 @@ fn emit_type_change(qual: &QualifiedName, before: &UserType, after: &UserType) -
     }
 }
 
-fn emit_create_policy(
-    table: &QualifiedName,
-    name: &str,
-    p: &crate::model::Policy,
-) -> String {
+fn emit_create_policy(table: &QualifiedName, name: &str, p: &crate::model::Policy) -> String {
     let mut s = format!(
         "CREATE POLICY {} ON {}",
         quote_ident(name),
@@ -894,7 +974,13 @@ fn emit_create_policy(
         let roles: Vec<String> = p
             .roles
             .iter()
-            .map(|r| if r.eq_ignore_ascii_case("PUBLIC") { "PUBLIC".to_string() } else { quote_ident(r) })
+            .map(|r| {
+                if r.eq_ignore_ascii_case("PUBLIC") {
+                    "PUBLIC".to_string()
+                } else {
+                    quote_ident(r)
+                }
+            })
             .collect();
         let _ = write!(s, " TO {}", roles.join(", "));
     }
@@ -978,9 +1064,7 @@ fn emit_grant_reconciliation(
 /// Collapse ACL entries to (grantee, privilege) → holds-grant-option. The
 /// grantor isn't tracked, so the same pair can appear once per grantor; the
 /// pair effectively carries the grant option if any of its entries does.
-fn grant_option_by_pair(
-    entries: &[GrantEntry],
-) -> BTreeMap<(Option<String>, String), bool> {
+fn grant_option_by_pair(entries: &[GrantEntry]) -> BTreeMap<(Option<String>, String), bool> {
     let mut m: BTreeMap<(Option<String>, String), bool> = BTreeMap::new();
     for e in entries {
         let grantable = m
@@ -1045,7 +1129,9 @@ fn qual_ident(q: &QualifiedName) -> String {
 }
 
 fn quote_ident(s: &str) -> String {
-    let needs_quoting = !s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    let needs_quoting = !s
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
         || s.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(true)
         || RESERVED.contains(&s);
     if needs_quoting {
@@ -1071,7 +1157,10 @@ fn view_options_clause(options: &BTreeMap<String, String>) -> String {
         .map(|(k, v)| {
             if v.is_empty() {
                 k.clone()
-            } else if v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-') {
+            } else if v
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
+            {
                 format!("{k}={v}")
             } else {
                 format!("{k}={}", quote_literal(v))
@@ -1093,14 +1182,71 @@ fn ensure_terminated(s: &str) -> String {
 // Common SQL reserved words. Not exhaustive — Postgres has a long list — but
 // covers the ones likely to appear as identifiers in catalog output.
 const RESERVED: &[&str] = &[
-    "all", "and", "any", "as", "asc", "case", "check", "collate", "column",
-    "constraint", "create", "current_date", "current_time", "current_timestamp",
-    "current_user", "default", "deferrable", "desc", "distinct", "do", "else",
-    "end", "except", "false", "for", "foreign", "from", "grant", "group",
-    "having", "in", "initially", "intersect", "into", "is", "join", "leading",
-    "limit", "localtime", "localtimestamp", "not", "null", "offset", "on",
-    "only", "or", "order", "placing", "primary", "references", "returning",
-    "select", "session_user", "some", "table", "then", "to", "trailing",
-    "true", "union", "unique", "user", "using", "when", "where", "window",
+    "all",
+    "and",
+    "any",
+    "as",
+    "asc",
+    "case",
+    "check",
+    "collate",
+    "column",
+    "constraint",
+    "create",
+    "current_date",
+    "current_time",
+    "current_timestamp",
+    "current_user",
+    "default",
+    "deferrable",
+    "desc",
+    "distinct",
+    "do",
+    "else",
+    "end",
+    "except",
+    "false",
+    "for",
+    "foreign",
+    "from",
+    "grant",
+    "group",
+    "having",
+    "in",
+    "initially",
+    "intersect",
+    "into",
+    "is",
+    "join",
+    "leading",
+    "limit",
+    "localtime",
+    "localtimestamp",
+    "not",
+    "null",
+    "offset",
+    "on",
+    "only",
+    "or",
+    "order",
+    "placing",
+    "primary",
+    "references",
+    "returning",
+    "select",
+    "session_user",
+    "some",
+    "table",
+    "then",
+    "to",
+    "trailing",
+    "true",
+    "union",
+    "unique",
+    "user",
+    "using",
+    "when",
+    "where",
+    "window",
     "with",
 ];

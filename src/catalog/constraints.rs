@@ -36,7 +36,13 @@ pub fn fetch(client: &mut Client, table_oid: u32) -> Result<BTreeMap<String, Con
             }
         }
         .to_string();
-        out.insert(name, Constraint { kind, definition: def });
+        out.insert(
+            name,
+            Constraint {
+                kind,
+                definition: def,
+            },
+        );
     }
     Ok(out)
 }

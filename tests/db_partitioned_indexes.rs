@@ -204,12 +204,16 @@ fn dropped_parent_column_round_trips_through_the_partition() {
     db.exec(&partitioned_table("pgpatch_t_column_drop"));
     let without_column = db.snapshot();
 
-    db.exec("ALTER TABLE pgpatch_t_column_drop.job ADD COLUMN blocked boolean NOT NULL DEFAULT false;");
+    db.exec(
+        "ALTER TABLE pgpatch_t_column_drop.job ADD COLUMN blocked boolean NOT NULL DEFAULT false;",
+    );
     let with_column = db.snapshot();
-    assert!(with_column.schemas["pgpatch_t_column_drop"].tables["job_common"]
-        .columns
-        .iter()
-        .any(|c| c.name == "blocked"));
+    assert!(
+        with_column.schemas["pgpatch_t_column_drop"].tables["job_common"]
+            .columns
+            .iter()
+            .any(|c| c.name == "blocked")
+    );
 
     // The parent DROP COLUMN cascades into the partition, so the patch must
     // drop the column on the parent only; a second drop on the partition

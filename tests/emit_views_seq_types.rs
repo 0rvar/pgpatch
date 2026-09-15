@@ -118,7 +118,8 @@ fn view_added_emits_reloptions() {
         definition: "SELECT 1 AS x".into(),
         ..Default::default()
     };
-    view.options.insert("security_invoker".into(), "true".into());
+    view.options
+        .insert("security_invoker".into(), "true".into());
     let out = sql(&[Change::ViewAdded {
         qual: qn("public", "v_sec"),
         materialized: false,
@@ -140,8 +141,12 @@ fn view_changed_emits_after_side_reloptions() {
         definition: "SELECT 1".into(),
         ..Default::default()
     };
-    after.options.insert("check_option".into(), "cascaded".into());
-    after.options.insert("security_invoker".into(), "true".into());
+    after
+        .options
+        .insert("check_option".into(), "cascaded".into());
+    after
+        .options
+        .insert("security_invoker".into(), "true".into());
     let out = sql(&[Change::ViewChanged {
         qual: qn("public", "v"),
         materialized: false,
@@ -396,10 +401,7 @@ fn type_added_enum_quotes_values() {
 #[test]
 fn type_added_composite() {
     let t = UserType::Composite {
-        fields: vec![
-            ("a".into(), "integer".into()),
-            ("b".into(), "text".into()),
-        ],
+        fields: vec![("a".into(), "integer".into()), ("b".into(), "text".into())],
     };
     let out = sql(&[Change::TypeAdded {
         qual: qn("public", "pair"),
@@ -429,7 +431,10 @@ fn type_added_domain_with_and_without_definition() {
         qual: qn("public", "pos"),
         user_type: t,
     }]);
-    assert_eq!(out, "CREATE DOMAIN public.pos AS integer CHECK (VALUE > 0);\n");
+    assert_eq!(
+        out,
+        "CREATE DOMAIN public.pos AS integer CHECK (VALUE > 0);\n"
+    );
 }
 
 #[test]
@@ -442,7 +447,10 @@ fn type_added_range_with_and_without_definition() {
         qual: qn("public", "intr"),
         user_type: t,
     }]);
-    assert_eq!(out, "CREATE TYPE public.intr AS RANGE (SUBTYPE = integer);\n");
+    assert_eq!(
+        out,
+        "CREATE TYPE public.intr AS RANGE (SUBTYPE = integer);\n"
+    );
 
     let t = UserType::Range {
         subtype: "integer".into(),

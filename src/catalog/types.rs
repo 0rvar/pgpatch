@@ -54,7 +54,10 @@ fn fetch_enum(client: &mut Client, type_oid: u32) -> Result<UserType> {
             &[&type_oid],
         )
         .context("listing pg_enum")?;
-    let values = rows.into_iter().map(|r| r.get::<_, String>("enumlabel")).collect();
+    let values = rows
+        .into_iter()
+        .map(|r| r.get::<_, String>("enumlabel"))
+        .collect();
     Ok(UserType::Enum { values })
 }
 
@@ -70,17 +73,19 @@ fn fetch_composite(client: &mut Client, typrelid: u32) -> Result<UserType> {
         .context("listing composite fields")?;
     let fields = rows
         .into_iter()
-        .map(|r| (r.get::<_, String>("attname"), r.get::<_, String>("data_type")))
+        .map(|r| {
+            (
+                r.get::<_, String>("attname"),
+                r.get::<_, String>("data_type"),
+            )
+        })
         .collect();
     Ok(UserType::Composite { fields })
 }
 
 fn fetch_domain(client: &mut Client, type_oid: u32, base_oid: u32) -> Result<UserType> {
     let base_row = client
-        .query_one(
-            "SELECT format_type($1, NULL) AS base_type",
-            &[&base_oid],
-        )
+        .query_one("SELECT format_type($1, NULL) AS base_type", &[&base_oid])
         .context("formatting domain base type")?;
     let base_type: String = base_row.get("base_type");
 
@@ -96,7 +101,10 @@ fn fetch_domain(client: &mut Client, type_oid: u32, base_oid: u32) -> Result<Use
         .map(|r| r.get::<_, String>("def"))
         .collect();
     let definition = parts.join(" ");
-    Ok(UserType::Domain { base_type, definition })
+    Ok(UserType::Domain {
+        base_type,
+        definition,
+    })
 }
 
 fn fetch_range(client: &mut Client, type_oid: u32) -> Result<UserType> {
@@ -108,5 +116,8 @@ fn fetch_range(client: &mut Client, type_oid: u32) -> Result<UserType> {
         )
         .context("looking up pg_range")?;
     let subtype: String = row.get("subtype");
-    Ok(UserType::Range { subtype: subtype.clone(), definition: subtype })
+    Ok(UserType::Range {
+        subtype: subtype.clone(),
+        definition: subtype,
+    })
 }

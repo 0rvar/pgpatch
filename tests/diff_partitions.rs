@@ -187,13 +187,25 @@ fn schema_of(tables: Vec<(&str, Table)>) -> Schema {
         map.insert(name.to_string(), table);
     }
     let mut schemas = BTreeMap::new();
-    schemas.insert("pgboss".to_string(), Namespace { tables: map, ..Default::default() });
-    Schema { schemas, ..Default::default() }
+    schemas.insert(
+        "pgboss".to_string(),
+        Namespace {
+            tables: map,
+            ..Default::default()
+        },
+    );
+    Schema {
+        schemas,
+        ..Default::default()
+    }
 }
 
 #[test]
 fn dropped_parent_takes_its_partitions_with_it() {
-    let before = schema(parent(vec![col("name", None)]), partition(vec![col("name", None)]));
+    let before = schema(
+        parent(vec![col("name", None)]),
+        partition(vec![col("name", None)]),
+    );
     let after = schema_of(vec![]);
 
     assert_eq!(table_changes(&diff(&before, &after)), vec!["- pgboss.job"]);
@@ -201,16 +213,25 @@ fn dropped_parent_takes_its_partitions_with_it() {
 
 #[test]
 fn dropping_a_single_partition_keeps_its_removal() {
-    let before = schema(parent(vec![col("name", None)]), partition(vec![col("name", None)]));
+    let before = schema(
+        parent(vec![col("name", None)]),
+        partition(vec![col("name", None)]),
+    );
     let after = schema_of(vec![("job", parent(vec![col("name", None)]))]);
 
-    assert_eq!(table_changes(&diff(&before, &after)), vec!["- pgboss.job_common"]);
+    assert_eq!(
+        table_changes(&diff(&before, &after)),
+        vec!["- pgboss.job_common"]
+    );
 }
 
 #[test]
 fn added_parent_and_partition_are_both_created() {
     let before = schema_of(vec![]);
-    let after = schema(parent(vec![col("name", None)]), partition(vec![col("name", None)]));
+    let after = schema(
+        parent(vec![col("name", None)]),
+        partition(vec![col("name", None)]),
+    );
 
     assert_eq!(
         table_changes(&diff(&before, &after)),

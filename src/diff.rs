@@ -9,62 +9,206 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Change {
-    SchemaAdded { name: String },
-    SchemaRemoved { name: String },
+    SchemaAdded {
+        name: String,
+    },
+    SchemaRemoved {
+        name: String,
+    },
 
-    TableAdded { qual: QualifiedName, table: Table },
-    TableRemoved { qual: QualifiedName },
+    TableAdded {
+        qual: QualifiedName,
+        table: Table,
+    },
+    TableRemoved {
+        qual: QualifiedName,
+    },
 
-    ColumnAdded { table: QualifiedName, column: Column },
-    ColumnRemoved { table: QualifiedName, name: String },
-    ColumnChanged { table: QualifiedName, name: String, before: Column, after: Column },
+    ColumnAdded {
+        table: QualifiedName,
+        column: Column,
+    },
+    ColumnRemoved {
+        table: QualifiedName,
+        name: String,
+    },
+    ColumnChanged {
+        table: QualifiedName,
+        name: String,
+        before: Column,
+        after: Column,
+    },
 
-    PrimaryKeyAdded { table: QualifiedName, index: Index },
-    PrimaryKeyRemoved { table: QualifiedName, index: Index },
-    PrimaryKeyChanged { table: QualifiedName, before: Index, after: Index },
+    PrimaryKeyAdded {
+        table: QualifiedName,
+        index: Index,
+    },
+    PrimaryKeyRemoved {
+        table: QualifiedName,
+        index: Index,
+    },
+    PrimaryKeyChanged {
+        table: QualifiedName,
+        before: Index,
+        after: Index,
+    },
 
-    IndexAdded { table: QualifiedName, name: String, index: Index },
-    IndexRemoved { table: QualifiedName, name: String },
-    IndexChanged { table: QualifiedName, name: String, before: Index, after: Index },
+    IndexAdded {
+        table: QualifiedName,
+        name: String,
+        index: Index,
+    },
+    IndexRemoved {
+        table: QualifiedName,
+        name: String,
+    },
+    IndexChanged {
+        table: QualifiedName,
+        name: String,
+        before: Index,
+        after: Index,
+    },
 
-    ConstraintAdded { table: QualifiedName, name: String, constraint: Constraint },
-    ConstraintRemoved { table: QualifiedName, name: String },
-    ConstraintChanged { table: QualifiedName, name: String, before: Constraint, after: Constraint },
+    ConstraintAdded {
+        table: QualifiedName,
+        name: String,
+        constraint: Constraint,
+    },
+    ConstraintRemoved {
+        table: QualifiedName,
+        name: String,
+    },
+    ConstraintChanged {
+        table: QualifiedName,
+        name: String,
+        before: Constraint,
+        after: Constraint,
+    },
 
-    RlsEnabled { table: QualifiedName },
-    RlsDisabled { table: QualifiedName },
+    RlsEnabled {
+        table: QualifiedName,
+    },
+    RlsDisabled {
+        table: QualifiedName,
+    },
 
-    ViewAdded { qual: QualifiedName, materialized: bool, view: View },
-    ViewRemoved { qual: QualifiedName, materialized: bool, depends_on: Vec<String> },
-    ViewChanged { qual: QualifiedName, materialized: bool, before: View, after: View },
+    ViewAdded {
+        qual: QualifiedName,
+        materialized: bool,
+        view: View,
+    },
+    ViewRemoved {
+        qual: QualifiedName,
+        materialized: bool,
+        depends_on: Vec<String>,
+    },
+    ViewChanged {
+        qual: QualifiedName,
+        materialized: bool,
+        before: View,
+        after: View,
+    },
 
-    SequenceAdded { qual: QualifiedName, sequence: Sequence },
-    SequenceRemoved { qual: QualifiedName },
-    SequenceChanged { qual: QualifiedName, before: Sequence, after: Sequence },
+    SequenceAdded {
+        qual: QualifiedName,
+        sequence: Sequence,
+    },
+    SequenceRemoved {
+        qual: QualifiedName,
+    },
+    SequenceChanged {
+        qual: QualifiedName,
+        before: Sequence,
+        after: Sequence,
+    },
 
-    TypeAdded { qual: QualifiedName, user_type: UserType },
-    TypeRemoved { qual: QualifiedName },
-    TypeChanged { qual: QualifiedName, before: UserType, after: UserType },
+    TypeAdded {
+        qual: QualifiedName,
+        user_type: UserType,
+    },
+    TypeRemoved {
+        qual: QualifiedName,
+    },
+    TypeChanged {
+        qual: QualifiedName,
+        before: UserType,
+        after: UserType,
+    },
 
-    TriggerAdded { table: QualifiedName, name: String, trigger: Trigger },
-    TriggerRemoved { table: QualifiedName, name: String },
-    TriggerChanged { table: QualifiedName, name: String, before: Trigger, after: Trigger },
+    TriggerAdded {
+        table: QualifiedName,
+        name: String,
+        trigger: Trigger,
+    },
+    TriggerRemoved {
+        table: QualifiedName,
+        name: String,
+    },
+    TriggerChanged {
+        table: QualifiedName,
+        name: String,
+        before: Trigger,
+        after: Trigger,
+    },
 
-    PolicyAdded { table: QualifiedName, name: String, policy: Policy },
-    PolicyRemoved { table: QualifiedName, name: String },
-    PolicyChanged { table: QualifiedName, name: String, before: Policy, after: Policy },
+    PolicyAdded {
+        table: QualifiedName,
+        name: String,
+        policy: Policy,
+    },
+    PolicyRemoved {
+        table: QualifiedName,
+        name: String,
+    },
+    PolicyChanged {
+        table: QualifiedName,
+        name: String,
+        before: Policy,
+        after: Policy,
+    },
 
-    FunctionAdded { qual: QualifiedName, function: Function },
-    FunctionRemoved { qual: QualifiedName, function: Function },
-    FunctionChanged { qual: QualifiedName, before: Function, after: Function },
-    FunctionGrantsChanged { qual: QualifiedName, before: Function, after: Function },
+    FunctionAdded {
+        qual: QualifiedName,
+        function: Function,
+    },
+    FunctionRemoved {
+        qual: QualifiedName,
+        function: Function,
+    },
+    FunctionChanged {
+        qual: QualifiedName,
+        before: Function,
+        after: Function,
+    },
+    FunctionGrantsChanged {
+        qual: QualifiedName,
+        before: Function,
+        after: Function,
+    },
 
-    ExtensionAdded { name: String, extension: Extension },
-    ExtensionRemoved { name: String },
-    ExtensionChanged { name: String, before: Extension, after: Extension },
+    ExtensionAdded {
+        name: String,
+        extension: Extension,
+    },
+    ExtensionRemoved {
+        name: String,
+    },
+    ExtensionChanged {
+        name: String,
+        before: Extension,
+        after: Extension,
+    },
 
-    PartitionByChanged { table: QualifiedName, before: Option<PartitionBy>, after: Option<PartitionBy> },
-    PartitionOfChanged { table: QualifiedName, before: Option<PartitionInfo>, after: Option<PartitionInfo> },
+    PartitionByChanged {
+        table: QualifiedName,
+        before: Option<PartitionBy>,
+        after: Option<PartitionBy>,
+    },
+    PartitionOfChanged {
+        table: QualifiedName,
+        before: Option<PartitionInfo>,
+        after: Option<PartitionInfo>,
+    },
 }
 
 pub fn diff(left: &Schema, right: &Schema) -> Vec<Change> {
@@ -84,7 +228,9 @@ pub fn diff(left: &Schema, right: &Schema) -> Vec<Change> {
     }
 
     for (sname, lns) in &left.schemas {
-        let Some(rns) = right.schemas.get(sname) else { continue };
+        let Some(rns) = right.schemas.get(sname) else {
+            continue;
+        };
         diff_namespace(sname, lns, rns, &mut out);
     }
 
@@ -211,7 +357,13 @@ fn diff_namespace(sname: &str, left: &Namespace, right: &Namespace, out: &mut Ve
     }
 
     diff_view_bucket(sname, &left.views, &right.views, false, out);
-    diff_view_bucket(sname, &left.materialized_views, &right.materialized_views, true, out);
+    diff_view_bucket(
+        sname,
+        &left.materialized_views,
+        &right.materialized_views,
+        true,
+        out,
+    );
     diff_sequences(sname, &left.sequences, &right.sequences, out);
     diff_types(sname, &left.types, &right.types, out);
     diff_functions(sname, &left.functions, &right.functions, out);
@@ -235,7 +387,10 @@ fn diff_functions(
     for (name, l) in left {
         let qual = QualifiedName::new(sname, name.as_str());
         match right.get(name) {
-            None => out.push(Change::FunctionRemoved { qual, function: l.clone() }),
+            None => out.push(Change::FunctionRemoved {
+                qual,
+                function: l.clone(),
+            }),
             Some(r) => {
                 let result_type_differs = matches!(
                     (&l.result_type, &r.result_type),
@@ -375,8 +530,15 @@ fn diff_table(qual: &QualifiedName, left: &Table, right: &Table, out: &mut Vec<C
     diff_named_map(
         &left.indexes,
         &right.indexes,
-        |name, idx| Change::IndexAdded { table: qual.clone(), name: name.clone(), index: idx.clone() },
-        |name| Change::IndexRemoved { table: qual.clone(), name: name.clone() },
+        |name, idx| Change::IndexAdded {
+            table: qual.clone(),
+            name: name.clone(),
+            index: idx.clone(),
+        },
+        |name| Change::IndexRemoved {
+            table: qual.clone(),
+            name: name.clone(),
+        },
         |name, before, after| Change::IndexChanged {
             table: qual.clone(),
             name: name.clone(),
@@ -393,7 +555,10 @@ fn diff_table(qual: &QualifiedName, left: &Table, right: &Table, out: &mut Vec<C
             name: name.clone(),
             constraint: c.clone(),
         },
-        |name| Change::ConstraintRemoved { table: qual.clone(), name: name.clone() },
+        |name| Change::ConstraintRemoved {
+            table: qual.clone(),
+            name: name.clone(),
+        },
         |name, before, after| Change::ConstraintChanged {
             table: qual.clone(),
             name: name.clone(),
@@ -405,8 +570,15 @@ fn diff_table(qual: &QualifiedName, left: &Table, right: &Table, out: &mut Vec<C
     diff_named_map(
         &left.triggers,
         &right.triggers,
-        |name, t| Change::TriggerAdded { table: qual.clone(), name: name.clone(), trigger: t.clone() },
-        |name| Change::TriggerRemoved { table: qual.clone(), name: name.clone() },
+        |name, t| Change::TriggerAdded {
+            table: qual.clone(),
+            name: name.clone(),
+            trigger: t.clone(),
+        },
+        |name| Change::TriggerRemoved {
+            table: qual.clone(),
+            name: name.clone(),
+        },
         |name, before, after| Change::TriggerChanged {
             table: qual.clone(),
             name: name.clone(),
@@ -424,8 +596,15 @@ fn diff_table(qual: &QualifiedName, left: &Table, right: &Table, out: &mut Vec<C
     diff_named_map(
         &left_policies,
         &right_policies,
-        |name, p| Change::PolicyAdded { table: qual.clone(), name: name.clone(), policy: p.clone() },
-        |name| Change::PolicyRemoved { table: qual.clone(), name: name.clone() },
+        |name, p| Change::PolicyAdded {
+            table: qual.clone(),
+            name: name.clone(),
+            policy: p.clone(),
+        },
+        |name| Change::PolicyRemoved {
+            table: qual.clone(),
+            name: name.clone(),
+        },
         |name, before, after| Change::PolicyChanged {
             table: qual.clone(),
             name: name.clone(),
@@ -436,9 +615,13 @@ fn diff_table(qual: &QualifiedName, left: &Table, right: &Table, out: &mut Vec<C
     );
     if left.rls_enabled != right.rls_enabled {
         if right.rls_enabled {
-            out.push(Change::RlsEnabled { table: qual.clone() });
+            out.push(Change::RlsEnabled {
+                table: qual.clone(),
+            });
         } else {
-            out.push(Change::RlsDisabled { table: qual.clone() });
+            out.push(Change::RlsDisabled {
+                table: qual.clone(),
+            });
         }
     }
     if left.partition_by != right.partition_by {

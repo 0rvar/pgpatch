@@ -18,6 +18,9 @@ pub fn fetch(client: &mut Client, included: &[String]) -> Result<Vec<NamespaceRo
         .context("listing pg_namespace")?;
     Ok(rows
         .into_iter()
-        .map(|r| NamespaceRow { oid: r.get("oid"), name: r.get("nspname") })
+        .map(|r| NamespaceRow {
+            oid: r.get("oid"),
+            name: r.get("nspname"),
+        })
         .collect())
 }

@@ -5,7 +5,11 @@ use postgres::Client;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
-#[command(name = "pgpatch", version, about = "Snapshot and diff PostgreSQL schemas")]
+#[command(
+    name = "pgpatch",
+    version,
+    about = "Snapshot and diff PostgreSQL schemas"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -74,18 +78,33 @@ enum DiffFormat {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Snapshot { config, connection, output } => snapshot(&config, &connection, &output),
-        Cmd::Diff { left, right, config, format } => {
-            run_diff(&left, &right, config.as_deref(), format)
-        }
-        Cmd::Patch { reference, target, config, dry_run, dangerously_apply } => {
+        Cmd::Snapshot {
+            config,
+            connection,
+            output,
+        } => snapshot(&config, &connection, &output),
+        Cmd::Diff {
+            left,
+            right,
+            config,
+            format,
+        } => run_diff(&left, &right, config.as_deref(), format),
+        Cmd::Patch {
+            reference,
+            target,
+            config,
+            dry_run,
+            dangerously_apply,
+        } => {
             // clap's ArgGroup guarantees exactly one of the two flags is set,
             // but we re-derive the mode explicitly so the rest of the program
             // never sees the raw booleans.
             let mode = match (dry_run, dangerously_apply) {
                 (true, false) => Mode::DryRun,
                 (false, true) => Mode::DangerouslyApply,
-                _ => unreachable!("clap ArgGroup enforces exactly one of --dry-run / --dangerously-apply"),
+                _ => unreachable!(
+                    "clap ArgGroup enforces exactly one of --dry-run / --dangerously-apply"
+                ),
             };
             run_patch(&reference, &target, config.as_deref(), mode)
         }
@@ -157,8 +176,8 @@ fn run_patch(reference: &str, target: &str, config: Option<&Path>, mode: Mode) -
         "about to open a write connection with mode != DangerouslyApply ({:?})",
         mode,
     );
-    let mut client = Client::connect(&conn.url, connector)
-        .with_context(|| format!("connecting to {target}"))?;
+    let mut client =
+        Client::connect(&conn.url, connector).with_context(|| format!("connecting to {target}"))?;
     // Wrap the whole patch in a single transaction so a mid-stream failure
     // rolls back cleanly instead of leaving the target half-patched.
     let mut tx = client.transaction().context("opening transaction")?;
@@ -202,7 +221,8 @@ fn load_side(side: &str, config: Option<&Path>) -> Result<Schema> {
         catalog::snapshot(side, &cfg)
     } else {
         let raw = std::fs::read_to_string(side).with_context(|| format!("reading {side}"))?;
-        let schema: Schema = serde_json::from_str(&raw).with_context(|| format!("parsing {side}"))?;
+        let schema: Schema =
+            serde_json::from_str(&raw).with_context(|| format!("parsing {side}"))?;
         Ok(schema)
     }
 }
@@ -220,7 +240,9 @@ mod tests {
     fn patch_requires_a_mode_flag() {
         let result = Cli::try_parse_from(["pgpatch", "patch", "a.json", "b.json"]);
         let err = match result {
-            Ok(_) => panic!("parsing should fail when neither --dry-run nor --dangerously-apply is set"),
+            Ok(_) => {
+                panic!("parsing should fail when neither --dry-run nor --dangerously-apply is set")
+            }
             Err(e) => e,
         };
         let msg = err.to_string();
@@ -241,7 +263,9 @@ mod tests {
             "b.json",
         ]);
         let err = match result {
-            Ok(_) => panic!("parsing should fail when both --dry-run and --dangerously-apply are set"),
+            Ok(_) => {
+                panic!("parsing should fail when both --dry-run and --dangerously-apply are set")
+            }
             Err(e) => e,
         };
         let msg = err.to_string();
@@ -256,7 +280,13 @@ mod tests {
         let cli = Cli::try_parse_from(["pgpatch", "patch", "--dry-run", "a.json", "b.json"])
             .expect("--dry-run alone should parse");
         match cli.cmd {
-            Cmd::Patch { dry_run, dangerously_apply, reference, target, .. } => {
+            Cmd::Patch {
+                dry_run,
+                dangerously_apply,
+                reference,
+                target,
+                ..
+            } => {
                 assert!(dry_run);
                 assert!(!dangerously_apply);
                 assert_eq!(reference, "a.json");
@@ -277,7 +307,13 @@ mod tests {
         ])
         .expect("--dangerously-apply alone should parse");
         match cli.cmd {
-            Cmd::Patch { dry_run, dangerously_apply, reference, target, .. } => {
+            Cmd::Patch {
+                dry_run,
+                dangerously_apply,
+                reference,
+                target,
+                ..
+            } => {
                 assert!(!dry_run);
                 assert!(dangerously_apply);
                 assert_eq!(reference, "a.json");

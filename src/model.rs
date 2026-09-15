@@ -135,10 +135,20 @@ pub struct Sequence {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UserType {
-    Enum { values: Vec<String> },
-    Composite { fields: Vec<(String, String)> },
-    Domain { base_type: String, definition: String },
-    Range { subtype: String, definition: String },
+    Enum {
+        values: Vec<String>,
+    },
+    Composite {
+        fields: Vec<(String, String)>,
+    },
+    Domain {
+        base_type: String,
+        definition: String,
+    },
+    Range {
+        subtype: String,
+        definition: String,
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -212,7 +222,10 @@ pub struct QualifiedName {
 
 impl QualifiedName {
     pub fn new(schema: impl Into<String>, name: impl Into<String>) -> Self {
-        Self { schema: schema.into(), name: name.into() }
+        Self {
+            schema: schema.into(),
+            name: name.into(),
+        }
     }
 }
 

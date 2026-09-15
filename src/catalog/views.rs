@@ -64,12 +64,19 @@ pub fn fetch(client: &mut Client, schema_oid: u32) -> Result<ViewBuckets> {
             }
         }
 
-        let view = View { definition: def, options, depends_on };
+        let view = View {
+            definition: def,
+            options,
+            depends_on,
+        };
         if kind as u8 == b'm' {
             materialized_views.insert(name, view);
         } else {
             views.insert(name, view);
         }
     }
-    Ok(ViewBuckets { views, materialized_views })
+    Ok(ViewBuckets {
+        views,
+        materialized_views,
+    })
 }

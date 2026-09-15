@@ -12,19 +12,33 @@ fn qual(schema: &str, name: &str) -> QualifiedName {
 }
 
 fn idx(definition: &str) -> Index {
-    Index { definition: definition.to_string(), unique: false, primary: false }
+    Index {
+        definition: definition.to_string(),
+        unique: false,
+        primary: false,
+    }
 }
 
 fn unique_idx(definition: &str) -> Index {
-    Index { definition: definition.to_string(), unique: true, primary: false }
+    Index {
+        definition: definition.to_string(),
+        unique: true,
+        primary: false,
+    }
 }
 
 fn ck(definition: &str) -> Constraint {
-    Constraint { kind: "c".into(), definition: definition.to_string() }
+    Constraint {
+        kind: "c".into(),
+        definition: definition.to_string(),
+    }
 }
 
 fn fk(definition: &str) -> Constraint {
-    Constraint { kind: "f".into(), definition: definition.to_string() }
+    Constraint {
+        kind: "f".into(),
+        definition: definition.to_string(),
+    }
 }
 
 // ---------- IndexAdded ----------
@@ -166,9 +180,9 @@ fn constraint_changed_emits_drop_then_add_in_order() {
     };
     let out = emit::sql(&[change]);
     assert!(out.contains("ALTER TABLE public.users DROP CONSTRAINT users_age_check;"));
-    assert!(out.contains(
-        "ALTER TABLE public.users ADD CONSTRAINT users_age_check CHECK (age >= 18);"
-    ));
+    assert!(
+        out.contains("ALTER TABLE public.users ADD CONSTRAINT users_age_check CHECK (age >= 18);")
+    );
     let drop_pos = out.find("DROP CONSTRAINT").unwrap();
     let add_pos = out.find("ADD CONSTRAINT").unwrap();
     assert!(drop_pos < add_pos, "drop must precede add");
@@ -210,7 +224,10 @@ fn drops_precede_creates_across_indexes_and_constraints() {
     let p_add_con = out.find("ADD CONSTRAINT users_age_chk").unwrap();
     let p_add_idx = out.find("CREATE INDEX users_email_idx").unwrap();
 
-    assert!(p_drop_con < p_drop_idx, "constraint drops before index drops");
+    assert!(
+        p_drop_con < p_drop_idx,
+        "constraint drops before index drops"
+    );
     assert!(p_drop_idx < p_add_con, "all drops before all creates");
     assert!(p_add_con < p_add_idx, "constraint adds before index adds");
 }
@@ -261,7 +278,10 @@ fn input_order_preserved_within_a_bucket() {
     let out = emit::sql(&changes);
     let z_pos = out.find("z_last").unwrap();
     let a_pos = out.find("a_first").unwrap();
-    assert!(z_pos < a_pos, "input order preserved within create_constraints bucket");
+    assert!(
+        z_pos < a_pos,
+        "input order preserved within create_constraints bucket"
+    );
 }
 
 // ---------- Exact-string snapshot ----------
@@ -323,5 +343,8 @@ fn index_changed_uses_if_exists_on_drop() {
         after: idx("CREATE INDEX t_a_idx ON public.t USING btree (a, b)"),
     }];
     let out = emit::sql(&changes);
-    assert!(out.contains("DROP INDEX IF EXISTS public.t_a_idx;"), "got:\n{out}");
+    assert!(
+        out.contains("DROP INDEX IF EXISTS public.t_a_idx;"),
+        "got:\n{out}"
+    );
 }

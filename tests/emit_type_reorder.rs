@@ -20,7 +20,9 @@ fn qn(s: &str, n: &str) -> QualifiedName {
 }
 
 fn position_of(haystack: &str, needle: &str) -> usize {
-    haystack.find(needle).unwrap_or_else(|| panic!("missing {needle} in:\n{haystack}"))
+    haystack
+        .find(needle)
+        .unwrap_or_else(|| panic!("missing {needle} in:\n{haystack}"))
 }
 
 #[test]
@@ -30,7 +32,9 @@ fn column_retyped_off_user_type_then_drop_type() {
     // DROP TYPE, otherwise PG refuses with "cannot drop type X because
     // other objects depend on it".
     let out = sql(&[
-        Change::TypeRemoved { qual: qn("public", "status_enum") },
+        Change::TypeRemoved {
+            qual: qn("public", "status_enum"),
+        },
         Change::ColumnChanged {
             table: qn("public", "orders"),
             name: "status".into(),
@@ -39,7 +43,10 @@ fn column_retyped_off_user_type_then_drop_type() {
         },
     ]);
 
-    let alter_col = position_of(&out, "ALTER TABLE public.orders ALTER COLUMN status TYPE text;");
+    let alter_col = position_of(
+        &out,
+        "ALTER TABLE public.orders ALTER COLUMN status TYPE text;",
+    );
     let drop_type = position_of(&out, "DROP TYPE public.status_enum;");
     assert!(
         alter_col < drop_type,
@@ -54,7 +61,9 @@ fn create_type_then_column_retyped_to_new_type() {
     let out = sql(&[
         Change::TypeAdded {
             qual: qn("public", "color"),
-            user_type: UserType::Enum { values: vec!["red".into(), "green".into()] },
+            user_type: UserType::Enum {
+                values: vec!["red".into(), "green".into()],
+            },
         },
         Change::ColumnChanged {
             table: qn("public", "shirts"),
@@ -65,8 +74,14 @@ fn create_type_then_column_retyped_to_new_type() {
     ]);
 
     let create_type = position_of(&out, "CREATE TYPE public.color AS ENUM");
-    let alter_col = position_of(&out, "ALTER TABLE public.shirts ALTER COLUMN shade TYPE public.color;");
-    assert!(create_type < alter_col, "CREATE TYPE must precede ALTER COLUMN; got:\n{out}");
+    let alter_col = position_of(
+        &out,
+        "ALTER TABLE public.shirts ALTER COLUMN shade TYPE public.color;",
+    );
+    assert!(
+        create_type < alter_col,
+        "CREATE TYPE must precede ALTER COLUMN; got:\n{out}"
+    );
 }
 
 #[test]
@@ -78,8 +93,12 @@ fn enum_value_added_before_column_uses_it() {
     let out = sql(&[
         Change::TypeChanged {
             qual: qn("public", "color"),
-            before: UserType::Enum { values: vec!["red".into()] },
-            after: UserType::Enum { values: vec!["red".into(), "blue".into()] },
+            before: UserType::Enum {
+                values: vec!["red".into()],
+            },
+            after: UserType::Enum {
+                values: vec!["red".into(), "blue".into()],
+            },
         },
         Change::ColumnChanged {
             table: qn("public", "shirts"),
@@ -92,8 +111,14 @@ fn enum_value_added_before_column_uses_it() {
         },
     ]);
 
-    let add_value = position_of(&out, "ALTER TYPE public.color ADD VALUE IF NOT EXISTS 'blue';");
-    let alter_default = position_of(&out, "ALTER TABLE public.shirts ALTER COLUMN shade SET DEFAULT 'blue'::public.color;");
+    let add_value = position_of(
+        &out,
+        "ALTER TYPE public.color ADD VALUE IF NOT EXISTS 'blue';",
+    );
+    let alter_default = position_of(
+        &out,
+        "ALTER TABLE public.shirts ALTER COLUMN shade SET DEFAULT 'blue'::public.color;",
+    );
     assert!(
         add_value < alter_default,
         "ADD VALUE must commit before column SET DEFAULT references it; got:\n{out}"
@@ -106,8 +131,13 @@ fn dropped_column_using_type_lets_type_drop_safely() {
     // type happens in drop_columns (drop phase) — long before drop_types in
     // the new ordering, so DROP TYPE still succeeds.
     let out = sql(&[
-        Change::ColumnRemoved { table: qn("public", "orders"), name: "status".into() },
-        Change::TypeRemoved { qual: qn("public", "status_enum") },
+        Change::ColumnRemoved {
+            table: qn("public", "orders"),
+            name: "status".into(),
+        },
+        Change::TypeRemoved {
+            qual: qn("public", "status_enum"),
+        },
     ]);
     let drop_col = position_of(&out, "ALTER TABLE public.orders DROP COLUMN status;");
     let drop_type = position_of(&out, "DROP TYPE public.status_enum;");
@@ -119,7 +149,9 @@ fn drop_type_still_runs_at_the_end_of_emission() {
     // drop_types is now the last drop. Document this contract via a snapshot
     // test: any future reordering needs to consciously break this.
     let out = sql(&[
-        Change::TypeRemoved { qual: qn("public", "old_enum") },
+        Change::TypeRemoved {
+            qual: qn("public", "old_enum"),
+        },
         Change::ColumnChanged {
             table: qn("public", "t"),
             name: "c".into(),

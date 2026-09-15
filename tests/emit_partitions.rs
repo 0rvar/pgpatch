@@ -22,14 +22,20 @@ fn qual(s: &str, n: &str) -> QualifiedName {
 #[test]
 fn partitioned_parent_creates_with_partition_by_range() {
     let table = Table {
-        columns: vec![col("id", "uuid", false), col("started_at", "timestamptz", false)],
+        columns: vec![
+            col("id", "uuid", false),
+            col("started_at", "timestamptz", false),
+        ],
         partition_by: Some(PartitionBy {
             strategy: "RANGE".into(),
             key: "(started_at)".into(),
         }),
         ..Default::default()
     };
-    let out = sql(&[Change::TableAdded { qual: qual("public", "memories_partition"), table }]);
+    let out = sql(&[Change::TableAdded {
+        qual: qual("public", "memories_partition"),
+        table,
+    }]);
     assert!(
         out.contains(") PARTITION BY RANGE (started_at);"),
         "expected trailing PARTITION BY clause; got:\n{out}"
@@ -47,7 +53,10 @@ fn partitioned_parent_list_strategy() {
         }),
         ..Default::default()
     };
-    let out = sql(&[Change::TableAdded { qual: qual("pgboss", "job"), table }]);
+    let out = sql(&[Change::TableAdded {
+        qual: qual("pgboss", "job"),
+        table,
+    }]);
     assert!(out.contains(") PARTITION BY LIST (name);"), "got:\n{out}");
 }
 
@@ -61,7 +70,10 @@ fn partitioned_parent_hash_strategy_with_multi_col_key() {
         }),
         ..Default::default()
     };
-    let out = sql(&[Change::TableAdded { qual: qual("public", "h"), table }]);
+    let out = sql(&[Change::TableAdded {
+        qual: qual("public", "h"),
+        table,
+    }]);
     assert!(out.contains(") PARTITION BY HASH (a, b);"), "got:\n{out}");
 }
 
@@ -75,14 +87,20 @@ fn partition_child_uses_short_partition_of_form() {
         }),
         ..Default::default()
     };
-    let out = sql(&[Change::TableAdded { qual: qual("pgboss", "job_common"), table }]);
+    let out = sql(&[Change::TableAdded {
+        qual: qual("pgboss", "job_common"),
+        table,
+    }]);
     assert!(
         out.contains("CREATE TABLE pgboss.job_common PARTITION OF pgboss.job DEFAULT;"),
         "expected DEFAULT partition; got:\n{out}"
     );
     // Children must NOT redeclare columns — column copying happens via the
     // parent automatically.
-    assert!(!out.contains("name text"), "child must not redeclare columns; got:\n{out}");
+    assert!(
+        !out.contains("name text"),
+        "child must not redeclare columns; got:\n{out}"
+    );
 }
 
 #[test]
@@ -94,7 +112,10 @@ fn partition_child_range_bound_round_trips() {
         }),
         ..Default::default()
     };
-    let out = sql(&[Change::TableAdded { qual: qual("partitioned", "memories_2026_01"), table }]);
+    let out = sql(&[Change::TableAdded {
+        qual: qual("partitioned", "memories_2026_01"),
+        table,
+    }]);
     assert!(out.contains(
         "CREATE TABLE partitioned.memories_2026_01 PARTITION OF public.memories_partition FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');"
     ), "got:\n{out}");
@@ -109,10 +130,16 @@ fn partition_child_list_bound_round_trips() {
         }),
         ..Default::default()
     };
-    let out = sql(&[Change::TableAdded { qual: qual("pgboss", "job_q1"), table }]);
-    assert!(out.contains(
-        "CREATE TABLE pgboss.job_q1 PARTITION OF pgboss.job FOR VALUES IN ('q1', 'q2');"
-    ), "got:\n{out}");
+    let out = sql(&[Change::TableAdded {
+        qual: qual("pgboss", "job_q1"),
+        table,
+    }]);
+    assert!(
+        out.contains(
+            "CREATE TABLE pgboss.job_q1 PARTITION OF pgboss.job FOR VALUES IN ('q1', 'q2');"
+        ),
+        "got:\n{out}"
+    );
 }
 
 #[test]
@@ -173,32 +200,56 @@ fn partition_bound_change_emits_detach_then_attach() {
 fn partition_by_change_emits_todo_only() {
     let out = sql(&[Change::PartitionByChanged {
         table: qual("public", "t"),
-        before: Some(PartitionBy { strategy: "RANGE".into(), key: "(a)".into() }),
-        after: Some(PartitionBy { strategy: "LIST".into(), key: "(a)".into() }),
+        before: Some(PartitionBy {
+            strategy: "RANGE".into(),
+            key: "(a)".into(),
+        }),
+        after: Some(PartitionBy {
+            strategy: "LIST".into(),
+            key: "(a)".into(),
+        }),
     }]);
-    assert!(out.contains("-- TODO: PARTITION BY clause changed on public.t"), "got:\n{out}");
+    assert!(
+        out.contains("-- TODO: PARTITION BY clause changed on public.t"),
+        "got:\n{out}"
+    );
     // No raw ALTER TABLE … PARTITION BY exists — make sure we don't pretend.
-    assert!(!out.contains("ALTER TABLE public.t PARTITION BY"), "got:\n{out}");
+    assert!(
+        !out.contains("ALTER TABLE public.t PARTITION BY"),
+        "got:\n{out}"
+    );
 }
 
 #[test]
 fn partitioned_parent_with_primary_key_includes_pk_inside_create() {
     use pgpatch::model::Index;
     let table = Table {
-        columns: vec![col("id", "uuid", false), col("started_at", "timestamptz", false)],
+        columns: vec![
+            col("id", "uuid", false),
+            col("started_at", "timestamptz", false),
+        ],
         primary_key: Some(Index {
             definition: "PRIMARY KEY (id, started_at)".into(),
             unique: true,
             primary: true,
         }),
-        partition_by: Some(PartitionBy { strategy: "RANGE".into(), key: "(started_at)".into() }),
+        partition_by: Some(PartitionBy {
+            strategy: "RANGE".into(),
+            key: "(started_at)".into(),
+        }),
         ..Default::default()
     };
-    let out = sql(&[Change::TableAdded { qual: qual("public", "p"), table }]);
+    let out = sql(&[Change::TableAdded {
+        qual: qual("public", "p"),
+        table,
+    }]);
     // The PARTITION BY clause must come after the closing paren of the column
     // list, with the inline PK still inside.
     let create_idx = out.find("CREATE TABLE public.p (").unwrap();
-    let pk_idx = out[create_idx..].find("PRIMARY KEY (id, started_at)").map(|i| create_idx + i).unwrap();
+    let pk_idx = out[create_idx..]
+        .find("PRIMARY KEY (id, started_at)")
+        .map(|i| create_idx + i)
+        .unwrap();
     let partby_idx = out[create_idx..]
         .find(") PARTITION BY RANGE (started_at)")
         .map(|i| create_idx + i)
@@ -219,16 +270,25 @@ fn child_with_indexes_emits_create_partition_then_indexes() {
         },
     );
     let table = Table {
-        partition_of: Some(PartitionInfo { parent: "pgboss.job".into(), bound: "DEFAULT".into() }),
+        partition_of: Some(PartitionInfo {
+            parent: "pgboss.job".into(),
+            bound: "DEFAULT".into(),
+        }),
         indexes,
         ..Default::default()
     };
-    let out = sql(&[Change::TableAdded { qual: qual("pgboss", "job_common"), table }]);
+    let out = sql(&[Change::TableAdded {
+        qual: qual("pgboss", "job_common"),
+        table,
+    }]);
     let create_idx = out
         .find("CREATE TABLE pgboss.job_common PARTITION OF pgboss.job DEFAULT;")
         .expect("partition-of create missing");
     let index_idx = out
         .find("CREATE INDEX job_common_extra_idx")
         .expect("child index missing");
-    assert!(create_idx < index_idx, "CREATE TABLE must precede CREATE INDEX; got:\n{out}");
+    assert!(
+        create_idx < index_idx,
+        "CREATE TABLE must precede CREATE INDEX; got:\n{out}"
+    );
 }

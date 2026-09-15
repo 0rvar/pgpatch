@@ -70,7 +70,11 @@ pub fn fetch(
             // the padding all-NULL row (no ACL entries at all).
             if let Some(is_public) = r.get::<_, Option<bool>>("grantee_is_public") {
                 acl.push(GrantEntry {
-                    grantee: if is_public { None } else { r.get("grantee_role") },
+                    grantee: if is_public {
+                        None
+                    } else {
+                        r.get("grantee_role")
+                    },
                     privilege: r.get("privilege"),
                     grantable: r.get("grantable"),
                 });

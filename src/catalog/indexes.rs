@@ -44,7 +44,11 @@ pub fn fetch(client: &mut Client, table_oid: u32) -> Result<Indexes> {
         // (they are created and dropped through the parent), so ON ONLY is
         // the only partition-specific wrinkle left in the definition.
         let def = def.replacen(" ON ONLY ", " ON ", 1);
-        let idx = Index { definition: def, unique, primary };
+        let idx = Index {
+            definition: def,
+            unique,
+            primary,
+        };
 
         if primary {
             primary_key = Some(idx);
@@ -54,5 +58,8 @@ pub fn fetch(client: &mut Client, table_oid: u32) -> Result<Indexes> {
             indexes.insert(name, idx);
         }
     }
-    Ok(Indexes { primary_key, indexes })
+    Ok(Indexes {
+        primary_key,
+        indexes,
+    })
 }

@@ -28,7 +28,12 @@ pub fn text(changes: &[Change]) -> String {
             Change::ColumnRemoved { table, name } => {
                 let _ = writeln!(out, "- {table}.{name}");
             }
-            Change::ColumnChanged { table, name, before, after } => {
+            Change::ColumnChanged {
+                table,
+                name,
+                before,
+                after,
+            } => {
                 let _ = writeln!(
                     out,
                     "~ {table}.{name} {} → {}",
@@ -42,7 +47,11 @@ pub fn text(changes: &[Change]) -> String {
             Change::PrimaryKeyRemoved { table, .. } => {
                 let _ = writeln!(out, "- {table} primary key");
             }
-            Change::PrimaryKeyChanged { table, before, after } => {
+            Change::PrimaryKeyChanged {
+                table,
+                before,
+                after,
+            } => {
                 let _ = writeln!(out, "~ {table} primary key");
                 let _ = writeln!(out, "    - {}", before.definition);
                 let _ = writeln!(out, "    + {}", after.definition);
@@ -54,19 +63,33 @@ pub fn text(changes: &[Change]) -> String {
             Change::IndexRemoved { table, name } => {
                 let _ = writeln!(out, "- {table} index {name}");
             }
-            Change::IndexChanged { table, name, before, after } => {
+            Change::IndexChanged {
+                table,
+                name,
+                before,
+                after,
+            } => {
                 let _ = writeln!(out, "~ {table} index {name}");
                 let _ = writeln!(out, "    - {}", before.definition);
                 let _ = writeln!(out, "    + {}", after.definition);
             }
-            Change::ConstraintAdded { table, name, constraint } => {
+            Change::ConstraintAdded {
+                table,
+                name,
+                constraint,
+            } => {
                 let _ = writeln!(out, "+ {table} constraint {name} ({})", constraint.kind);
                 let _ = writeln!(out, "    {}", constraint.definition);
             }
             Change::ConstraintRemoved { table, name } => {
                 let _ = writeln!(out, "- {table} constraint {name}");
             }
-            Change::ConstraintChanged { table, name, before, after } => {
+            Change::ConstraintChanged {
+                table,
+                name,
+                before,
+                after,
+            } => {
                 let _ = writeln!(out, "~ {table} constraint {name}");
                 let _ = writeln!(out, "    - {}", before.definition);
                 let _ = writeln!(out, "    + {}", after.definition);
@@ -77,13 +100,19 @@ pub fn text(changes: &[Change]) -> String {
             Change::RlsDisabled { table } => {
                 let _ = writeln!(out, "- {table} row-level security");
             }
-            Change::ViewAdded { qual, materialized, .. } => {
+            Change::ViewAdded {
+                qual, materialized, ..
+            } => {
                 let _ = writeln!(out, "+ {} {qual}", view_kind(*materialized));
             }
-            Change::ViewRemoved { qual, materialized, .. } => {
+            Change::ViewRemoved {
+                qual, materialized, ..
+            } => {
                 let _ = writeln!(out, "- {} {qual}", view_kind(*materialized));
             }
-            Change::ViewChanged { qual, materialized, .. } => {
+            Change::ViewChanged {
+                qual, materialized, ..
+            } => {
                 let _ = writeln!(out, "~ {} {qual}", view_kind(*materialized));
             }
             Change::SequenceAdded { qual, sequence } => {
@@ -140,18 +169,62 @@ pub fn text(changes: &[Change]) -> String {
             Change::ExtensionRemoved { name } => {
                 let _ = writeln!(out, "- extension {name}");
             }
-            Change::ExtensionChanged { name, before, after } => {
-                let _ = writeln!(out, "~ extension {name} {} → {}", before.version, after.version);
+            Change::ExtensionChanged {
+                name,
+                before,
+                after,
+            } => {
+                let _ = writeln!(
+                    out,
+                    "~ extension {name} {} → {}",
+                    before.version, after.version
+                );
             }
-            Change::PartitionByChanged { table, before, after } => {
+            Change::PartitionByChanged {
+                table,
+                before,
+                after,
+            } => {
                 let _ = writeln!(out, "~ {table} partition by");
-                let _ = writeln!(out, "    - {}", before.as_ref().map(|p| format!("{} {}", p.strategy, p.key)).unwrap_or_else(|| "(none)".into()));
-                let _ = writeln!(out, "    + {}", after.as_ref().map(|p| format!("{} {}", p.strategy, p.key)).unwrap_or_else(|| "(none)".into()));
+                let _ = writeln!(
+                    out,
+                    "    - {}",
+                    before
+                        .as_ref()
+                        .map(|p| format!("{} {}", p.strategy, p.key))
+                        .unwrap_or_else(|| "(none)".into())
+                );
+                let _ = writeln!(
+                    out,
+                    "    + {}",
+                    after
+                        .as_ref()
+                        .map(|p| format!("{} {}", p.strategy, p.key))
+                        .unwrap_or_else(|| "(none)".into())
+                );
             }
-            Change::PartitionOfChanged { table, before, after } => {
+            Change::PartitionOfChanged {
+                table,
+                before,
+                after,
+            } => {
                 let _ = writeln!(out, "~ {table} partition of");
-                let _ = writeln!(out, "    - {}", before.as_ref().map(|p| format!("{} {}", p.parent, p.bound)).unwrap_or_else(|| "(none)".into()));
-                let _ = writeln!(out, "    + {}", after.as_ref().map(|p| format!("{} {}", p.parent, p.bound)).unwrap_or_else(|| "(none)".into()));
+                let _ = writeln!(
+                    out,
+                    "    - {}",
+                    before
+                        .as_ref()
+                        .map(|p| format!("{} {}", p.parent, p.bound))
+                        .unwrap_or_else(|| "(none)".into())
+                );
+                let _ = writeln!(
+                    out,
+                    "    + {}",
+                    after
+                        .as_ref()
+                        .map(|p| format!("{} {}", p.parent, p.bound))
+                        .unwrap_or_else(|| "(none)".into())
+                );
             }
         }
     }

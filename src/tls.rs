@@ -77,7 +77,11 @@ pub fn parse(connection: &str) -> ConnectionSpec {
     let url = rewrite_sslmode(connection, "verify-full", "require");
     let url = rewrite_sslmode(&url, "verify-ca", "require");
     let url = strip_param(&url, "sslrootcert");
-    ConnectionSpec { url, sslmode, root_cert }
+    ConnectionSpec {
+        url,
+        sslmode,
+        root_cert,
+    }
 }
 
 fn extract_kv<'a>(connection: &'a str, key: &str) -> Option<&'a str> {
@@ -86,7 +90,11 @@ fn extract_kv<'a>(connection: &'a str, key: &str) -> Option<&'a str> {
         .find_map(|kv| {
             let kv = kv.trim();
             let (k, v) = kv.split_once('=')?;
-            if k.eq_ignore_ascii_case(key) { Some(v) } else { None }
+            if k.eq_ignore_ascii_case(key) {
+                Some(v)
+            } else {
+                None
+            }
         })
 }
 
@@ -108,7 +116,11 @@ fn strip_param(s: &str, key: &str) -> String {
         let start = i + rel;
         // Anchor: make sure the match begins a real key=value pair, not a
         // suffix of some other key (`nosslrootcert=` must not match).
-        let prev = if start == 0 { None } else { s[..start].chars().next_back() };
+        let prev = if start == 0 {
+            None
+        } else {
+            s[..start].chars().next_back()
+        };
         let anchored = matches!(prev, None) || prev.map(is_sep).unwrap_or(false);
         if !anchored {
             out.push_str(&s[i..start + needle.len()]);
@@ -283,8 +295,14 @@ mod tests {
     #[test]
     fn parse_url_styles() {
         assert_eq!(parse("postgres://u:p@h/db").sslmode, SslMode::Prefer);
-        assert_eq!(parse("postgres://u:p@h/db?sslmode=disable").sslmode, SslMode::Disable);
-        assert_eq!(parse("postgres://u:p@h/db?sslmode=require").sslmode, SslMode::Require);
+        assert_eq!(
+            parse("postgres://u:p@h/db?sslmode=disable").sslmode,
+            SslMode::Disable
+        );
+        assert_eq!(
+            parse("postgres://u:p@h/db?sslmode=require").sslmode,
+            SslMode::Require
+        );
         assert_eq!(
             parse("postgres://u:p@h/db?sslmode=verify-full").sslmode,
             SslMode::VerifyFull,
@@ -305,11 +323,12 @@ mod tests {
 
     #[test]
     fn sslrootcert_extracted_and_stripped_from_url() {
-        let c = parse(
-            "postgres://u@h/db?sslmode=verify-full&sslrootcert=/etc/supabase-ca.crt",
-        );
+        let c = parse("postgres://u@h/db?sslmode=verify-full&sslrootcert=/etc/supabase-ca.crt");
         assert_eq!(c.sslmode, SslMode::VerifyFull);
-        assert_eq!(c.root_cert.as_deref(), Some(std::path::Path::new("/etc/supabase-ca.crt")));
+        assert_eq!(
+            c.root_cert.as_deref(),
+            Some(std::path::Path::new("/etc/supabase-ca.crt"))
+        );
         // tokio-postgres doesn't recognize sslrootcert; it must be gone.
         assert_eq!(c.url, "postgres://u@h/db?sslmode=require");
     }
@@ -317,7 +336,10 @@ mod tests {
     #[test]
     fn sslrootcert_keyvalue_style() {
         let c = parse("host=h sslmode=verify-full sslrootcert=/tmp/ca.pem");
-        assert_eq!(c.root_cert.as_deref(), Some(std::path::Path::new("/tmp/ca.pem")));
+        assert_eq!(
+            c.root_cert.as_deref(),
+            Some(std::path::Path::new("/tmp/ca.pem"))
+        );
         assert_eq!(c.url, "host=h sslmode=require");
     }
 
