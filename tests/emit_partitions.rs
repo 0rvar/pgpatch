@@ -367,3 +367,55 @@ fn partition_in_another_schema_is_created_after_its_parent() {
         .expect("child created");
     assert!(parent_at < child_at, "parent must come first; got:\n{out}");
 }
+
+#[test]
+fn detach_runs_before_the_childs_own_constraint_and_column_work() {
+    let out = sql(&[
+        Change::ConstraintAdded {
+            table: qual("s", "c"),
+            name: "ck".into(),
+            constraint: pgpatch::model::Constraint {
+                kind: "check".into(),
+                definition: "CHECK ((id > 0))".into(),
+            },
+        },
+        Change::ColumnRemoved {
+            table: qual("s", "c"),
+            name: "b".into(),
+        },
+        Change::PartitionOfChanged {
+            table: qual("s", "c"),
+            before: Some(PartitionInfo {
+                parent: "s.p".into(),
+                bound: "FOR VALUES FROM (1) TO (10)".into(),
+            }),
+            after: None,
+        },
+    ]);
+    let detach = out.find("DETACH PARTITION").expect("detach");
+    assert!(
+        detach < out.find("ADD CONSTRAINT ck").unwrap(),
+        "got:\n{out}"
+    );
+    assert!(detach < out.find("DROP COLUMN b").unwrap(), "got:\n{out}");
+}
+
+#[test]
+fn attach_runs_after_the_child_is_shaped_to_match() {
+    let out = sql(&[
+        Change::ColumnAdded {
+            table: qual("s", "c"),
+            column: col("v", "text", true),
+        },
+        Change::PartitionOfChanged {
+            table: qual("s", "c"),
+            before: None,
+            after: Some(PartitionInfo {
+                parent: "s.p".into(),
+                bound: "FOR VALUES FROM (1) TO (10)".into(),
+            }),
+        },
+    ]);
+    let attach = out.find("ATTACH PARTITION").expect("attach");
+    assert!(out.find("ADD COLUMN v").unwrap() < attach, "got:\n{out}");
+}
